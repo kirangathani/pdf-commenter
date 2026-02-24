@@ -253,10 +253,70 @@ export class ExampleView extends ItemView {
             let pinchTargetScale: number | null = null;
             let pinchCommitTimer: number | null = null;
             const clampScale = (s: number) => Math.max(0.5, Math.min(3, s));
+
+            const getViewportCenterAnchor = () => {
+                if (!this.pdfContainer) return null;
+                const r = this.pdfContainer.getBoundingClientRect();
+                const cx = r.left + r.width / 2;
+                const cy = r.top + r.height / 2;
+                const elAt = document.elementFromPoint(cx, cy) as HTMLElement | null;
+                const pageEl = elAt?.closest?.('.pdf-page-container') as HTMLElement | null;
+                if (!pageEl) return null;
+                const pageRect = pageEl.getBoundingClientRect();
+                if (!pageRect.height) return null;
+                const pageNumber = Number(pageEl.dataset.pageNumber ?? NaN);
+                if (!Number.isFinite(pageNumber)) return null;
+                const yNorm = Math.max(0, Math.min(1, (cy - pageRect.top) / pageRect.height));
+                return { pageNumber, yNorm };
+            };
+
+            // Debug helper: compute anchor using scrollTop math instead of elementFromPoint.
+            // This helps diagnose cases where elementFromPoint hits gaps/overlays.
+            const getViewportCenterAnchorByScroll = () => {
+                if (!this.pdfContainer) return null;
+                const A = this.pdfContainer.clientHeight / 2;
+                const centerY = this.pdfContainer.scrollTop + A;
+                const pages = Array.from(this.pdfContainer.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+                for (const pageEl of pages) {
+                    const top = pageEl.offsetTop;
+                    const bottom = top + pageEl.offsetHeight;
+                    if (centerY < top || centerY > bottom) continue;
+                    const pageNumber = Number(pageEl.dataset.pageNumber ?? NaN);
+                    if (!Number.isFinite(pageNumber) || pageEl.offsetHeight === 0) continue;
+                    const yNorm = Math.max(0, Math.min(1, (centerY - top) / pageEl.offsetHeight));
+                    return { pageNumber, yNorm };
+                }
+                return null;
+            };
+
+            const restoreViewportCenterAnchor = (anchor: { pageNumber: number; yNorm: number } | null) => {
+                if (!anchor || !this.pdfContainer) return;
+                const pageEl = this.pdfContainer.querySelector(
+                    `.pdf-page-container[data-page-number="${anchor.pageNumber}"]`
+                ) as HTMLElement | null;
+                if (!pageEl) return;
+                const A = this.pdfContainer.clientHeight / 2;
+                const topPx = pageEl.offsetTop + (anchor.yNorm * pageEl.offsetHeight);
+                const nextScrollTop = topPx - A;
+                if (Number.isFinite(nextScrollTop)) {
+                    this.pdfContainer.scrollTop = Math.max(0, nextScrollTop);
+                }
+            };
+
             const schedulePinchCommit = () => {
                 if (pinchCommitTimer) window.clearTimeout(pinchCommitTimer);
                 pinchCommitTimer = window.setTimeout(async () => {
                     if (!this.pdfViewer || pinchTargetScale == null) return;
+                    const anchor = getViewportCenterAnchor();
+                    const anchorByScroll = getViewportCenterAnchorByScroll();
+                    // IMPORTANT: during pinch preview we apply a CSS transform to the scroll container.
+                    // `elementFromPoint` operates in transformed (visual) coordinates, while our restore uses
+                    // untransformed layout metrics (offsetTop/offsetHeight). Prefer the scroll-based anchor
+                    // so the coordinate system matches restoreViewportCenterAnchor.
+                    const anchorChosen = anchorByScroll ?? anchor;
+                    // #region agent log (hypothesisId:C)
+                    fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug3',hypothesisId:'C',location:'view.ts:schedulePinchCommit:beforeCommit',message:'pinch commit start',data:{pinchTargetScale,anchor,anchorByScroll,anchorChosen,scrollTop:this.pdfContainer?.scrollTop,clientH:this.pdfContainer?.clientHeight},timestamp:Date.now()})}).catch(()=>{});
+                    // #endregion agent log
                     try {
                         isZooming = true;
                         updateZoomButtonsState();
@@ -265,6 +325,12 @@ export class ExampleView extends ItemView {
                         if (typeof this.pdfViewer.clearPreviewScale === 'function') {
                             this.pdfViewer.clearPreviewScale();
                         }
+                        // Keep the viewport centered on the same PDF spot after the real layout change.
+                        const scrollTopBeforeRestore = this.pdfContainer?.scrollTop;
+                        restoreViewportCenterAnchor(anchorChosen);
+                        // #region agent log (hypothesisId:D)
+                        fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug3',hypothesisId:'D',location:'view.ts:schedulePinchCommit:afterCommit',message:'pinch commit end',data:{pinchTargetScale,anchor,anchorByScroll,anchorChosen,scrollTopBeforeRestore,scrollTopAfterRestore:this.pdfContainer?.scrollTop},timestamp:Date.now()})}).catch(()=>{});
+                        // #endregion agent log
                         zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
                     } finally {
                         isZooming = false;
@@ -293,11 +359,37 @@ export class ExampleView extends ItemView {
                     (e as any).stopImmediatePropagation?.();
                     e.stopPropagation();
 
-                    const base = pinchTargetScale ?? (typeof this.pdfViewer.getScale === 'function' ? this.pdfViewer.getScale() : 1.5);
+                    const currentScale =
+                        (typeof this.pdfViewer.getScale === 'function' ? this.pdfViewer.getScale() : 1.5) as number;
+                    const base = pinchTargetScale ?? currentScale;
+
+                    // #region agent log (hypothesisId:A)
+                    fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug2',hypothesisId:'A',location:'view.ts:pinchWheelHandler:entry',message:'pinch wheel',data:{ctrlKey:e.ctrlKey,defaultPrevented:e.defaultPrevented,eventPhase:e.eventPhase,deltaY:e.deltaY,deltaX:(e as any).deltaX,deltaMode:(e as any).deltaMode,scrollTop:this.pdfContainer?.scrollTop,clientH:this.pdfContainer?.clientHeight,currentScale,base,pinchTargetScale},timestamp:Date.now()})}).catch(()=>{});
+                    // #endregion agent log
+
                     // Smooth exponential mapping. deltaY > 0 means "zoom out" on Chromium.
                     const factor = Math.exp(-e.deltaY * 0.002);
                     const next = clampScale(base * factor);
                     pinchTargetScale = next;
+
+                    // Keep viewport center anchored while we change the CSS transform.
+                    // Because we are using a CSS transform (not relayout), scroll geometry doesn't change,
+                    // so we compensate scrollTop using the transform factors.
+                    if (this.pdfContainer) {
+                        const oldF = base / (currentScale || 1);
+                        const newF = next / (currentScale || 1);
+                        if (oldF > 0 && newF > 0) {
+                            const A = this.pdfContainer.clientHeight / 2;
+                            const S = this.pdfContainer.scrollTop;
+                            const nextScrollTop = S + A * (1 / oldF - 1 / newF);
+                            if (Number.isFinite(nextScrollTop)) {
+                                this.pdfContainer.scrollTop = Math.max(0, nextScrollTop);
+                            }
+                            // #region agent log (hypothesisId:B)
+                            fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug1',hypothesisId:'B',location:'view.ts:pinchWheelHandler:scrollComp',message:'scroll compensation',data:{S_before:S,A,oldF,newF,nextScrollTop_calc:nextScrollTop,scrollTop_after:this.pdfContainer.scrollTop,currentScale,base,next},timestamp:Date.now()})}).catch(()=>{});
+                            // #endregion agent log
+                        }
+                    }
 
                     // Preview zoom (visual only)
                     if (typeof this.pdfViewer.setPreviewScale === 'function') {
