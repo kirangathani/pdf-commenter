@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath } from 'obsidian';
+import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath } from 'obsidian';
 
 export const VIEW_TYPE_EXAMPLE = 'example-view';
 
@@ -82,7 +82,7 @@ async function getPDFViewerComponent() {
     return PDFViewerComponent;
 }
 
-export class ExampleView extends ItemView {
+export class ExampleView extends FileView {
     private pdfContainer: HTMLElement;
     private pdfViewer: any = null;
     private controlsSection: HTMLElement;
@@ -90,7 +90,6 @@ export class ExampleView extends ItemView {
     private commentsPane: HTMLElement;
     private commentsTrack: HTMLElement;
     private annotations: PdfAnnotation[] = [];
-    private currentPdfPath: string | null = null;
     private currentPdfCommentsFolder: string | null = null;
     private isSyncingScroll = false;
     private pluginId: string;
@@ -106,6 +105,13 @@ export class ExampleView extends ItemView {
     private deselectHandler: ((e: MouseEvent) => void) | null = null;
     private pinchWheelHandler: ((e: WheelEvent) => void) | null = null;
 
+    // Promoted from onOpen locals so onLoadFile can access them
+    private zoomLabel: HTMLSpanElement;
+    private zoomOutBtn: HTMLButtonElement;
+    private zoomInBtn: HTMLButtonElement;
+    private isLoadingPdf = false;
+    private isZooming = false;
+
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
         this.pluginId = opts.pluginId;
@@ -117,7 +123,11 @@ export class ExampleView extends ItemView {
     }
 
     getDisplayText(): string {
-        return 'PDF Viewer';
+        return this.file?.basename ?? 'PDF Viewer';
+    }
+
+    canAcceptExtension(extension: string): boolean {
+        return extension === 'pdf';
     }
 
     private getContextMenuActions(): any[] {
@@ -196,44 +206,15 @@ export class ExampleView extends ItemView {
             // Header
             this.controlsSection.createEl('h2', { text: 'PDF Viewer' });
             
-            // PDF input section
-            const pdfInputSection = this.controlsSection.createEl('div', { cls: 'pdf-input-section' });
-            
-            pdfInputSection.createEl('label', {
-                text: 'PDF Path (relative to vault root):',
-                cls: 'pdf-input-label'
-            });
-
-            const inputContainer = pdfInputSection.createEl('div', { cls: 'pdf-input-container' });
-            
-            const pdfInput = inputContainer.createEl('input', {
-                type: 'text',
-                placeholder: 'e.g., My_PDF.pdf',
-                cls: 'pdf-path-input'
-            });
-
-            const loadButton = inputContainer.createEl('button', {
-                text: 'Load PDF',
-                cls: 'mod-cta'
-            });
-
             // Zoom controls
-            const zoomContainer = pdfInputSection.createEl('div', { cls: 'zoom-controls' });
-            
-            const zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' });
-            const zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' });
-            const zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' });
+            const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
 
-            // Disable zoom controls while loading/zooming
-            let isLoadingPdf = false;
-            let isZooming = false;
-            const updateZoomButtonsState = () => {
-                const enabled = Boolean(this.pdfViewer) && !isLoadingPdf && !isZooming;
-                zoomOutBtn.disabled = !enabled;
-                zoomInBtn.disabled = !enabled;
-            };
+            this.zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' }) as HTMLButtonElement;
+            this.zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' }) as HTMLSpanElement;
+            this.zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' }) as HTMLButtonElement;
+
             // Initial state (no PDF loaded yet)
-            updateZoomButtonsState();
+            this.updateZoomButtonsState();
 
             // Viewer row (PDF left + comments right), below the input/controls section
             this.viewerRow = container.createEl('div', { cls: 'pdf-viewer-row' });
@@ -315,8 +296,8 @@ export class ExampleView extends ItemView {
                     // so the coordinate system matches restoreViewportCenterAnchor.
                     const anchorChosen = anchorByScroll ?? anchor;
                     try {
-                        isZooming = true;
-                        updateZoomButtonsState();
+                        this.isZooming = true;
+                        this.updateZoomButtonsState();
                         await this.pdfViewer.setScale(pinchTargetScale);
                         // Ensure we end in a non-preview state
                         if (typeof this.pdfViewer.clearPreviewScale === 'function') {
@@ -324,10 +305,10 @@ export class ExampleView extends ItemView {
                         }
                         // Keep the viewport centered on the same PDF spot after the real layout change.
                         restoreViewportCenterAnchor(anchorChosen);
-                        zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
+                        this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
                     } finally {
-                        isZooming = false;
-                        updateZoomButtonsState();
+                        this.isZooming = false;
+                        this.updateZoomButtonsState();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
                         this.renderHighlights();
@@ -341,7 +322,7 @@ export class ExampleView extends ItemView {
                     if (!e.ctrlKey) return;
                     if (!this.pdfViewer) return;
                     // Don't fight a committed rerender in progress
-                    if (isLoadingPdf || isZooming) {
+                    if (this.isLoadingPdf || this.isZooming) {
                         e.preventDefault();
                         return;
                     }
@@ -381,7 +362,7 @@ export class ExampleView extends ItemView {
                     if (typeof this.pdfViewer.setPreviewScale === 'function') {
                         this.pdfViewer.setPreviewScale(next);
                     }
-                    zoomLabel.textContent = `${Math.round(next * 100)}%`;
+                    this.zoomLabel.textContent = `${Math.round(next * 100)}%`;
 
                     // Let the user keep pinching; commit after a short pause.
                     schedulePinchCommit();
@@ -469,108 +450,18 @@ export class ExampleView extends ItemView {
             this.pdfContainer.addEventListener('scroll', () => syncScroll('pdf'), { passive: true });
             this.commentsPane.addEventListener('scroll', () => syncScroll('comments'), { passive: true });
 
-            // Load button handler
-            loadButton.addEventListener('click', async () => {
-                let pdfPath = pdfInput.value.trim();
-                if (!pdfPath) {
-                    this.showMessage('Please enter a PDF path', 'error');
-                    return;
-                }
-                if (!pdfPath.toLowerCase().endsWith('.pdf')) {
-                    pdfPath += '.pdf';
-                }
-
-                try {
-                    isLoadingPdf = true;
-                    updateZoomButtonsState();
-                    this.currentPdfPath = pdfPath;
-                    this.currentPdfCommentsFolder = null;
-                    this.annotations = [];
-                    this.selectedAnnotationId = null;
-                    this.renderCommentMarkers();
-                    this.renderHighlights();
-
-                    console.log('Loading PDF:', pdfPath);
-                    const file = this.app.vault.getAbstractFileByPath(pdfPath);
-                    
-                    if (file instanceof TFile && file.extension === 'pdf') {
-                        const pdfData = await this.app.vault.readBinary(file);
-                        console.log('PDF data loaded, size:', pdfData.byteLength);
-                        
-                        // Destroy previous viewer
-                        if (this.pdfViewer) {
-                            this.pdfViewer.destroy();
-                        }
-                        
-                        // Create new viewer (lazy loaded)
-                        const ViewerClass = await getPDFViewerComponent();
-                        // IMPORTANT: `plugin:` URLs can't be loaded as module workers from `app://obsidian.md` (CORS).
-                        // Use a blob URL created from the on-disk worker file instead.
-                        const adapter: any = this.app.vault.adapter as any;
-                        const basePath =
-                            (typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : undefined) ??
-                            (adapter?.basePath as string | undefined);
-                        const runtimeDir =
-                            (this.app as any)?.plugins?.plugins?.[this.pluginId]?.manifest?.dir as string | undefined;
-                        const candidates: string[] = Array.from(
-                            new Set([this.pluginDir, runtimeDir, this.pluginId].filter((v): v is string => Boolean(v)))
-                        );
-                        const workerSrc = await resolvePdfWorkerSrc(candidates, basePath);
-                        console.log('[pdf-worker] basePath=', basePath, 'candidates=', candidates, 'workerSrc=', workerSrc);
-                        if (!workerSrc) {
-                            throw new Error(`[pdf-worker] Could not resolve workerSrc. basePath=${basePath} candidates=${candidates.join(',')}`);
-                        }
-                        this.pdfViewer = new ViewerClass(
-                            this.pdfContainer,
-                            this.getContextMenuActions(),
-                            { workerSrc, revokeWorkerSrc: true }
-                        );
-                        
-                        // Load the PDF
-                        await this.pdfViewer.loadPdf(pdfData);
-                        // Pages are fully rendered when loadPdf resolves
-                        await this.loadAnnotationsForCurrentPdf();
-                        this.updateCommentsTrackHeight();
-                        this.renderCommentMarkers();
-                        this.renderHighlights();
-                        
-                        // Show success
-                        this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
-                        
-                        // Update zoom label
-                        zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
-                    } else {
-                        this.showMessage(`Error: ${pdfPath} is not a valid PDF file`, 'error');
-                    }
-                } catch (error: any) {
-                    console.error('Error loading PDF:', error);
-                    this.showMessage(`Error: ${error.message}`, 'error');
-                    // Ensure we don't leave a half-initialized viewer around
-                    if (this.pdfViewer) {
-                        try { this.pdfViewer.destroy(); } catch { /* ignore */ }
-                        this.pdfViewer = null;
-                    }
-                } finally {
-                    isLoadingPdf = false;
-                    updateZoomButtonsState();
-                    this.updateCommentsTrackHeight();
-                    this.renderCommentMarkers();
-                    this.renderHighlights();
-                }
-            });
-
             // Zoom handlers
-            zoomOutBtn.addEventListener('click', async () => {
+            this.zoomOutBtn.addEventListener('click', async () => {
                 if (this.pdfViewer) {
                     try {
-                        isZooming = true;
-                        updateZoomButtonsState();
+                        this.isZooming = true;
+                        this.updateZoomButtonsState();
                         const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
                         await this.pdfViewer.setScale(newScale);
-                        zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                        this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
                     } finally {
-                        isZooming = false;
-                        updateZoomButtonsState();
+                        this.isZooming = false;
+                        this.updateZoomButtonsState();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
                         this.renderHighlights();
@@ -578,17 +469,17 @@ export class ExampleView extends ItemView {
                 }
             });
 
-            zoomInBtn.addEventListener('click', async () => {
+            this.zoomInBtn.addEventListener('click', async () => {
                 if (this.pdfViewer) {
                     try {
-                        isZooming = true;
-                        updateZoomButtonsState();
+                        this.isZooming = true;
+                        this.updateZoomButtonsState();
                         const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
                         await this.pdfViewer.setScale(newScale);
-                        zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                        this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
                     } finally {
-                        isZooming = false;
-                        updateZoomButtonsState();
+                        this.isZooming = false;
+                        this.updateZoomButtonsState();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
                         this.renderHighlights();
@@ -610,6 +501,12 @@ export class ExampleView extends ItemView {
             cls: `${type}-message`
         });
         setTimeout(() => msg.remove(), 3000);
+    }
+
+    private updateZoomButtonsState(): void {
+        const enabled = Boolean(this.pdfViewer) && !this.isLoadingPdf && !this.isZooming;
+        if (this.zoomOutBtn) this.zoomOutBtn.disabled = !enabled;
+        if (this.zoomInBtn) this.zoomInBtn.disabled = !enabled;
     }
 
     async onClose(): Promise<void> {
@@ -635,6 +532,91 @@ export class ExampleView extends ItemView {
         this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
+    }
+
+    private async resolveWorkerSrc(): Promise<string | undefined> {
+        const adapter: any = this.app.vault.adapter as any;
+        const basePath =
+            (typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : undefined) ??
+            (adapter?.basePath as string | undefined);
+        const runtimeDir =
+            (this.app as any)?.plugins?.plugins?.[this.pluginId]?.manifest?.dir as string | undefined;
+        const candidates: string[] = Array.from(
+            new Set([this.pluginDir, runtimeDir, this.pluginId].filter((v): v is string => Boolean(v)))
+        );
+        const workerSrc = await resolvePdfWorkerSrc(candidates, basePath);
+        console.log('[pdf-worker] basePath=', basePath, 'candidates=', candidates, 'workerSrc=', workerSrc);
+        return workerSrc;
+    }
+
+    async onLoadFile(file: TFile): Promise<void> {
+        // Reset state
+        this.currentPdfCommentsFolder = null;
+        this.annotations = [];
+        this.selectedAnnotationId = null;
+        this.renderCommentMarkers();
+        this.renderHighlights();
+
+        this.isLoadingPdf = true;
+        this.updateZoomButtonsState();
+
+        try {
+            const pdfData = await this.app.vault.readBinary(file);
+
+            // Destroy previous viewer
+            if (this.pdfViewer) {
+                this.pdfViewer.destroy();
+            }
+
+            // Create new viewer (lazy loaded)
+            const ViewerClass = await getPDFViewerComponent();
+            const workerSrc = await this.resolveWorkerSrc();
+            if (!workerSrc) {
+                throw new Error('[pdf-worker] Could not resolve workerSrc');
+            }
+            this.pdfViewer = new ViewerClass(
+                this.pdfContainer,
+                this.getContextMenuActions(),
+                { workerSrc, revokeWorkerSrc: true }
+            );
+
+            await this.pdfViewer.loadPdf(pdfData);
+            await this.loadAnnotationsForCurrentPdf();
+            this.updateCommentsTrackHeight();
+            this.renderCommentMarkers();
+            this.renderHighlights();
+
+            this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
+        } catch (error: any) {
+            console.error('Error loading PDF:', error);
+            this.showMessage(`Error: ${error.message}`, 'error');
+            if (this.pdfViewer) {
+                try { this.pdfViewer.destroy(); } catch { /* ignore */ }
+                this.pdfViewer = null;
+            }
+        } finally {
+            this.isLoadingPdf = false;
+            this.updateZoomButtonsState();
+            this.updateCommentsTrackHeight();
+            this.renderCommentMarkers();
+        }
+    }
+
+    async onUnloadFile(file: TFile): Promise<void> {
+        if (this.pdfViewer) {
+            this.pdfViewer.destroy();
+            this.pdfViewer = null;
+        }
+        this.annotations = [];
+        this.selectedAnnotationId = null;
+        this.currentPdfCommentsFolder = null;
+        this.activeInlineTextarea = null;
+        this.activeInlineSave = null;
+        this.activeInlineDirty = false;
+        this.pendingFocusAnnotationId = null;
+        this.pendingNoteCreation.clear();
+        if (this.pdfContainer) this.pdfContainer.empty();
+        if (this.commentsTrack) this.commentsTrack.empty();
     }
 
     private updateCommentsTrackHeight(): void {
@@ -732,11 +714,11 @@ export class ExampleView extends ItemView {
                                 console.warn('[comment-inline] note creation failed:', e);
                                 return;
                             }
-                        } else if (this.currentPdfPath) {
+                        } else if (this.file) {
                             // Last resort: create note now
                             const p = (async () => {
                                 if (!this.currentPdfCommentsFolder) {
-                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath!);
+                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.file!.path);
                                 }
                                 const note = await this.createCommentNote(a);
                                 a.notePath = note.path;
@@ -925,7 +907,7 @@ export class ExampleView extends ItemView {
     }
 
     private async createCommentNote(ann: PdfAnnotation): Promise<TFile> {
-        if (!this.currentPdfPath) throw new Error('No current PDF path');
+        if (!this.file) throw new Error('No current PDF file');
         if (!this.currentPdfCommentsFolder) throw new Error('No comments folder');
 
         const createdIso = new Date(ann.createdAt).toISOString().replace(/[:.]/g, '-');
@@ -934,7 +916,7 @@ export class ExampleView extends ItemView {
 
         const frontmatter =
             `---\n` +
-            `pdfPath: "${this.currentPdfPath.replace(/"/g, '\\"')}"\n` +
+            `pdfPath: "${this.file!.path.replace(/"/g, '\\"')}"\n` +
             `annotationId: "${ann.id}"\n` +
             `pageNumber: ${ann.anchor.pageNumber}\n` +
             `yNorm: ${ann.anchor.yNorm}\n` +
@@ -1003,29 +985,30 @@ export class ExampleView extends ItemView {
     }
 
     private async loadAnnotationsForCurrentPdf(): Promise<void> {
-        if (!this.currentPdfPath) return;
+        if (!this.file) return;
+        const pdfPath = this.file.path;
 
-        const sidecar = this.getAnnotationsPathForPdf(this.currentPdfPath);
+        const sidecar = this.getAnnotationsPathForPdf(pdfPath);
         try {
             const af = this.app.vault.getAbstractFileByPath(sidecar);
             if (!(af instanceof TFile)) {
                 this.annotations = [];
-                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
+                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
                 return;
             }
 
             const raw = await this.app.vault.read(af);
             const parsed = JSON.parse(raw) as PdfAnnotationsFile;
-            if (parsed?.version !== 1 || parsed?.pdfPath !== this.currentPdfPath || !Array.isArray(parsed.annotations)) {
+            if (parsed?.version !== 1 || parsed?.pdfPath !== pdfPath || !Array.isArray(parsed.annotations)) {
                 this.annotations = [];
-                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
+                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
                 return;
             }
 
             this.annotations = parsed.annotations;
 
             // Ensure per-PDF folder exists; migrate missing notePath by creating notes
-            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
+            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
             let migrated = false;
             for (const ann of this.annotations) {
                 if (!ann.notePath) {
@@ -1042,12 +1025,13 @@ export class ExampleView extends ItemView {
     }
 
     private async saveAnnotationsForCurrentPdf(): Promise<void> {
-        if (!this.currentPdfPath) return;
-        const sidecar = this.getAnnotationsPathForPdf(this.currentPdfPath);
+        if (!this.file) return;
+        const pdfPath = this.file.path;
+        const sidecar = this.getAnnotationsPathForPdf(pdfPath);
 
         const payload: PdfAnnotationsFile = {
             version: 1,
-            pdfPath: this.currentPdfPath,
+            pdfPath,
             annotations: this.annotations,
         };
         const json = JSON.stringify(payload, null, 2);
@@ -1137,10 +1121,10 @@ export class ExampleView extends ItemView {
         await this.saveAnnotationsForCurrentPdf();
 
         // Kick off note creation in the background so the UI is responsive immediately
-        if (this.currentPdfPath) {
+        if (this.file) {
             const createPromise = (async () => {
                 if (!this.currentPdfCommentsFolder) {
-                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath!);
+                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.file!.path);
                 }
                 const note = await this.createCommentNote(ann);
                 ann.notePath = note.path;
