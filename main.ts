@@ -47,8 +47,8 @@ export default class MinimalExamplePlugin extends Plugin {
             this.app.workspace.revealLeaf(existingLeaf);
             return;
         }
-        // Create new leaf in split view
-        const leaf = this.app.workspace.getLeaf('split');
+        // Open in the current active leaf
+        const leaf = this.app.workspace.getLeaf(false);
         await leaf.setViewState({
             type: VIEW_TYPE_EXAMPLE,
             active: true

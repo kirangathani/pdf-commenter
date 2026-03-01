@@ -117,7 +117,8 @@
     min-height: 100%;
 }
 
-/* Purple marker for a comment (placeholder) */
+/* Purple marker for a comment (placeholder).
+   height is coupled to MARKER_HEIGHT in view.ts renderCommentMarkers() */
 .pdf-comment-marker {
     position: absolute;
     left: 16px;

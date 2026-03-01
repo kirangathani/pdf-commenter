@@ -262,9 +262,6 @@ export class PDFViewerComponent {
         const factor = scale / (this.currentScale || 1);
         scrollContainer.style.transformOrigin = '0 0';
         scrollContainer.style.transform = `scale(${factor})`;
-        // #region agent log (hypothesisId:E)
-        fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug1',hypothesisId:'E',location:'pdf-viewer.ts:setPreviewScale',message:'setPreviewScale applied',data:{currentScale:this.currentScale,targetScale:scale,factorApplied:factor,transform:scrollContainer.style.transform},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion agent log
     }
 
     /**
@@ -485,10 +482,6 @@ export class PDFViewerComponent {
         const all = this.getOrderedPageNumbersFromDom();
         const visibleSet = new Set<number>(visible);
         const remaining = all.filter((n) => !visibleSet.has(n));
-
-        // #region agent log (hypothesisId:F)
-        fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug1',hypothesisId:'F',location:'pdf-viewer.ts:setScale',message:'setScale progressive',data:{prevScale,newScale:scale,generation,factorApplied:factor,visibleCount:visible.length,allCount:all.length,remainingCount:remaining.length,containerScrollTop:(this.container as any)?.scrollTop},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion agent log
 
         // If we somehow don't have DOM pages yet, fall back to the original full render.
         if (!all.length) {

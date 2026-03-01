@@ -314,9 +314,6 @@ export class ExampleView extends ItemView {
                     // untransformed layout metrics (offsetTop/offsetHeight). Prefer the scroll-based anchor
                     // so the coordinate system matches restoreViewportCenterAnchor.
                     const anchorChosen = anchorByScroll ?? anchor;
-                    // #region agent log (hypothesisId:C)
-                    fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug3',hypothesisId:'C',location:'view.ts:schedulePinchCommit:beforeCommit',message:'pinch commit start',data:{pinchTargetScale,anchor,anchorByScroll,anchorChosen,scrollTop:this.pdfContainer?.scrollTop,clientH:this.pdfContainer?.clientHeight},timestamp:Date.now()})}).catch(()=>{});
-                    // #endregion agent log
                     try {
                         isZooming = true;
                         updateZoomButtonsState();
@@ -326,11 +323,7 @@ export class ExampleView extends ItemView {
                             this.pdfViewer.clearPreviewScale();
                         }
                         // Keep the viewport centered on the same PDF spot after the real layout change.
-                        const scrollTopBeforeRestore = this.pdfContainer?.scrollTop;
                         restoreViewportCenterAnchor(anchorChosen);
-                        // #region agent log (hypothesisId:D)
-                        fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug3',hypothesisId:'D',location:'view.ts:schedulePinchCommit:afterCommit',message:'pinch commit end',data:{pinchTargetScale,anchor,anchorByScroll,anchorChosen,scrollTopBeforeRestore,scrollTopAfterRestore:this.pdfContainer?.scrollTop},timestamp:Date.now()})}).catch(()=>{});
-                        // #endregion agent log
                         zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
                     } finally {
                         isZooming = false;
@@ -363,10 +356,6 @@ export class ExampleView extends ItemView {
                         (typeof this.pdfViewer.getScale === 'function' ? this.pdfViewer.getScale() : 1.5) as number;
                     const base = pinchTargetScale ?? currentScale;
 
-                    // #region agent log (hypothesisId:A)
-                    fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug2',hypothesisId:'A',location:'view.ts:pinchWheelHandler:entry',message:'pinch wheel',data:{ctrlKey:e.ctrlKey,defaultPrevented:e.defaultPrevented,eventPhase:e.eventPhase,deltaY:e.deltaY,deltaX:(e as any).deltaX,deltaMode:(e as any).deltaMode,scrollTop:this.pdfContainer?.scrollTop,clientH:this.pdfContainer?.clientHeight,currentScale,base,pinchTargetScale},timestamp:Date.now()})}).catch(()=>{});
-                    // #endregion agent log
-
                     // Smooth exponential mapping. deltaY > 0 means "zoom out" on Chromium.
                     const factor = Math.exp(-e.deltaY * 0.002);
                     const next = clampScale(base * factor);
@@ -385,9 +374,6 @@ export class ExampleView extends ItemView {
                             if (Number.isFinite(nextScrollTop)) {
                                 this.pdfContainer.scrollTop = Math.max(0, nextScrollTop);
                             }
-                            // #region agent log (hypothesisId:B)
-                            fetch('http://127.0.0.1:7243/ingest/085c3c95-1c32-47a4-bf91-cd6c2ad3c12f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'debug1',hypothesisId:'B',location:'view.ts:pinchWheelHandler:scrollComp',message:'scroll compensation',data:{S_before:S,A,oldF,newF,nextScrollTop_calc:nextScrollTop,scrollTop_after:this.pdfContainer.scrollTop,currentScale,base,next},timestamp:Date.now()})}).catch(()=>{});
-                            // #endregion agent log
                         }
                     }
 
@@ -485,10 +471,13 @@ export class ExampleView extends ItemView {
 
             // Load button handler
             loadButton.addEventListener('click', async () => {
-                const pdfPath = pdfInput.value.trim();
+                let pdfPath = pdfInput.value.trim();
                 if (!pdfPath) {
                     this.showMessage('Please enter a PDF path', 'error');
                     return;
+                }
+                if (!pdfPath.toLowerCase().endsWith('.pdf')) {
+                    pdfPath += '.pdf';
                 }
 
                 try {
@@ -658,16 +647,32 @@ export class ExampleView extends ItemView {
         if (!this.commentsTrack || !this.pdfContainer) return;
         this.commentsTrack.empty();
 
+        // Layout constants — MARKER_HEIGHT must match .pdf-comment-marker height in styles.css
+        const MARKER_HEIGHT = 240;
+        const MARKER_GAP = 10;
+
+        // Phase 1: Compute ideal top positions
+        const items: { annotation: typeof this.annotations[0]; idealTop: number }[] = [];
         for (const a of this.annotations) {
             const pageEl = this.pdfContainer.querySelector(
                 `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
             ) as HTMLElement | null;
             if (!pageEl) continue;
+            items.push({ annotation: a, idealTop: pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight) });
+        }
 
-            const topPx = pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight);
+        // Phase 2: Sort by ideal position
+        items.sort((a, b) => a.idealTop - b.idealTop);
+
+        // Phase 3: Greedy push-down layout
+        let nextAvailableTop = 0;
+        for (const item of items) {
+            const a = item.annotation;
+            const placedTop = Math.max(item.idealTop, nextAvailableTop);
+            nextAvailableTop = placedTop + MARKER_HEIGHT + MARKER_GAP;
+
             const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
-            // Align the TOP of the marker to the computed pixel Y
-            marker.style.top = `${topPx}px`;
+            marker.style.top = `${placedTop}px`;
 
             marker.dataset.annotationId = a.id;
             marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
@@ -803,6 +808,11 @@ export class ExampleView extends ItemView {
                 const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
                 void this.renderNotePreviewInto(a, preview);
             }
+        }
+
+        // Extend track height if pushed-down markers exceed the PDF scroll height
+        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
+            this.commentsTrack.style.height = `${nextAvailableTop}px`;
         }
     }
 
