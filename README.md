@@ -24,7 +24,7 @@ When you annotate a PDF, the plugin creates:
 
 ## Install
 
-Copy `main.js`, `pdf.worker.js`, `styles.css`, and `manifest.json` into your vault at `.obsidian/plugins/pdf-commenter/`.
+Download `main.js`, `pdf.worker.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/kirangathani/magnifying-glass/releases/latest) and place them in your vault at `.obsidian/plugins/pdf-commenter/`.
 
 ## Keyboard shortcuts
 
