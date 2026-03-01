@@ -1,6 +1,7 @@
 import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath } from 'obsidian';
+import { WikilinkSuggest } from './wikilink-suggest';
 
-export const VIEW_TYPE_EXAMPLE = 'example-view';
+export const VIEW_TYPE_PDF_COMMENTER = 'pdf-commenter-view';
 
 type NormalizedRect = { x: number; y: number; w: number; h: number }; // 0..1 relative to page box
 type PageRects = { pageNumber: number; rects: NormalizedRect[] };
@@ -82,7 +83,7 @@ async function getPDFViewerComponent() {
     return PDFViewerComponent;
 }
 
-export class ExampleView extends FileView {
+export class PdfCommenterView extends FileView {
     private pdfContainer: HTMLElement;
     private pdfViewer: any = null;
     private controlsSection: HTMLElement;
@@ -104,6 +105,7 @@ export class ExampleView extends FileView {
     private pendingNoteCreation: Map<string, Promise<TFile>> = new Map();
     private deselectHandler: ((e: MouseEvent) => void) | null = null;
     private pinchWheelHandler: ((e: WheelEvent) => void) | null = null;
+    private activeWikilinkSuggest: WikilinkSuggest | null = null;
 
     // Promoted from onOpen locals so onLoadFile can access them
     private zoomLabel: HTMLSpanElement;
@@ -119,7 +121,7 @@ export class ExampleView extends FileView {
     }
 
     getViewType(): string {
-        return VIEW_TYPE_EXAMPLE;
+        return VIEW_TYPE_PDF_COMMENTER;
     }
 
     getDisplayText(): string {
@@ -387,6 +389,14 @@ export class ExampleView extends FileView {
                         return;
                     }
 
+                    // If the comment textarea is empty, delete the annotation instead of leaving a blank comment
+                    const deselectId = this.selectedAnnotationId;
+                    if (deselectId && this.activeInlineTextarea && !this.activeInlineTextarea.value.trim()) {
+                        this.selectedAnnotationId = null;
+                        void this.deleteEmptyAnnotation(deselectId);
+                        return;
+                    }
+
                     this.selectedAnnotationId = null;
                     this.renderCommentMarkers();
                 };
@@ -532,6 +542,10 @@ export class ExampleView extends FileView {
         this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
+        if (this.activeWikilinkSuggest) {
+            this.activeWikilinkSuggest.destroy();
+            this.activeWikilinkSuggest = null;
+        }
     }
 
     private async resolveWorkerSrc(): Promise<string | undefined> {
@@ -615,6 +629,10 @@ export class ExampleView extends FileView {
         this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
+        if (this.activeWikilinkSuggest) {
+            this.activeWikilinkSuggest.destroy();
+            this.activeWikilinkSuggest = null;
+        }
         if (this.pdfContainer) this.pdfContainer.empty();
         if (this.commentsTrack) this.commentsTrack.empty();
     }
@@ -786,6 +804,10 @@ export class ExampleView extends FileView {
                     e.stopPropagation();
                     void doSave();
                 });
+
+                // Wikilink autocomplete
+                if (this.activeWikilinkSuggest) this.activeWikilinkSuggest.destroy();
+                this.activeWikilinkSuggest = new WikilinkSuggest(this.app, textarea);
             } else {
                 const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
                 void this.renderNotePreviewInto(a, preview);
@@ -1042,6 +1064,33 @@ export class ExampleView extends FileView {
         } else {
             await this.app.vault.create(sidecar, json);
         }
+    }
+
+    private async deleteEmptyAnnotation(annotationId: string): Promise<void> {
+        const idx = this.annotations.findIndex(a => a.id === annotationId);
+        if (idx === -1) return;
+        const ann = this.annotations[idx];
+
+        // Wait for any in-flight note creation to complete before deleting
+        const pending = this.pendingNoteCreation.get(annotationId);
+        if (pending) {
+            try { await pending; } catch { /* ignore */ }
+        }
+
+        // Remove from array and persist
+        this.annotations.splice(idx, 1);
+        await this.saveAnnotationsForCurrentPdf();
+
+        // Delete the backing note if it exists
+        if (ann.notePath) {
+            const noteFile = this.app.vault.getAbstractFileByPath(ann.notePath);
+            if (noteFile instanceof TFile) {
+                try { await this.app.vault.delete(noteFile); } catch { /* ignore */ }
+            }
+        }
+
+        this.renderCommentMarkers();
+        this.renderHighlights();
     }
 
     private getSelectionHighlightRectsFromCurrentSelection(): PageRects[] {

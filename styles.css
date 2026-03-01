@@ -345,6 +345,47 @@
     flex: 1;
 }
 
+/* Wikilink suggest popup */
+.mg-suggest-container {
+    position: fixed;
+    z-index: 1000;
+    background: var(--background-primary, #fff);
+    border: 1px solid var(--background-modifier-border, rgba(0, 0, 0, 0.15));
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    max-height: 200px;
+    overflow-y: auto;
+    display: none;
+}
+
+.mg-suggest-container.is-visible {
+    display: block;
+}
+
+.mg-suggest-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-normal, #000);
+}
+
+.mg-suggest-item .mg-suggest-path {
+    font-size: 11px;
+    color: var(--text-muted, rgba(0, 0, 0, 0.5));
+    margin-left: 6px;
+}
+
+.mg-suggest-item.is-active {
+    background: var(--background-modifier-hover, rgba(124, 58, 237, 0.12));
+}
+
+.mg-suggest-empty {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--text-muted, rgba(0, 0, 0, 0.5));
+    font-style: italic;
+}
+
 /* Messages */
 .success-message {
     color: var(--text-success);

@@ -1,4 +1,4 @@
-# Magnifying Glass — Obsidian PDF Viewer Plugin
+# PDF Commenter — Obsidian Plugin
 
 ## What This Is
 
@@ -11,13 +11,14 @@ All source files are in the repo root (no `src/` directory).
 | File | Role |
 |---|---|
 | `main.ts` | Plugin entry point. Extends `Plugin`. Registers the custom view type, ribbon icon, and command. |
-| `view.ts` | `ExampleView` extends `ItemView`. Contains all UI: controls bar, PDF container, comments pane, annotation CRUD, scroll sync, pinch-to-zoom orchestration, highlight rendering, note creation/migration. This is the largest file (~1190 lines). |
+| `view.ts` | `PdfCommenterView` extends `FileView`. Contains all UI: controls bar, PDF container, comments pane, annotation CRUD, scroll sync, pinch-to-zoom orchestration, highlight rendering, note creation/migration. This is the largest file (~1200 lines). |
 | `pdf-viewer.ts` | `PDFViewerComponent`. Wraps pdfjs-dist: loads PDFs, renders pages to canvas, renders text layers for selection, handles zoom with progressive rendering (visible pages first, background render for rest), context menu integration. |
 | `context-menu.ts` | `ContextMenu` class. Generic right-click menu positioned at cursor, used for Copy / Comment / Copy to Active Note / Create Note actions. |
 | `styles.css` | All CSS. Layout uses flexbox. Purple (`#7c3aed`) accent colour for comment markers and buttons. Uses Obsidian CSS variables for theme compatibility. |
 | `pdf.worker.js` | Copied from `pdfjs-dist` at build time by esbuild plugin. Shipped alongside `main.js` in the plugin folder. Loaded at runtime via blob URL to avoid CORS issues with Obsidian's `app://` protocol. |
 | `esbuild.config.mjs` | Build config. Single entry point `main.ts` → `main.js` (CJS). Custom plugin `copy-pdf-worker` copies the pdfjs worker file post-build. |
-| `manifest.json` | Plugin id is `sample-plugin`, name `Sample Plugin` (not yet renamed to match actual plugin). `minAppVersion: 0.15.0`. |
+| `wikilink-suggest.ts` | `WikilinkSuggest` class. Inline autocomplete popup for `[[wikilinks]]` in the comment textarea. Fuzzy-filters vault markdown files, keyboard nav, positioned below/above textarea. |
+| `manifest.json` | Plugin id `pdf-commenter`, name `PDF Commenter`. `minAppVersion: 0.15.0`, `isDesktopOnly: true`. |
 
 ## Build & Dev
 
@@ -83,8 +84,9 @@ The worker file cannot be loaded via `plugin:` URLs due to CORS restrictions in 
 
 ## Known Issues / Debt
 
-- `manifest.json` still has placeholder `sample-plugin` id and description — needs updating before community plugin submission.
-- `ExampleView` / `VIEW_TYPE_EXAMPLE` / `MinimalExamplePlugin` — class and constant names still reference the sample plugin template. Should be renamed.
-- The `README.md` is the default Obsidian sample plugin README, not project-specific.
 - No automated tests.
+- No way to delete a comment that already has content.
+- No error recovery if sidecar JSON is corrupted.
+- Annotations are tied to absolute text positions; replacing the PDF with a different version silently misaligns them.
 - Comment hotkey is `Ctrl+Alt+M`; save comment is `Ctrl/Cmd+Enter` when textarea is focused.
+- Empty comments (no text typed) are auto-deleted on deselect.
