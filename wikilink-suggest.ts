@@ -166,11 +166,10 @@ export class WikilinkSuggest {
 		const popupHeight = this.popup.offsetHeight;
 		const spaceBelow = window.innerHeight - rect.bottom;
 		if (spaceBelow >= popupHeight || spaceBelow >= rect.top) {
-			this.popup.style.top = `${rect.bottom + 2}px`;
+			this.popup.setCssStyles({ top: `${rect.bottom + 2}px` });
 		} else {
-			this.popup.style.top = `${rect.top - popupHeight - 2}px`;
+			this.popup.setCssStyles({ top: `${rect.top - popupHeight - 2}px` });
 		}
-		this.popup.style.left = `${rect.left}px`;
-		this.popup.style.width = `${rect.width}px`;
+		this.popup.setCssStyles({ left: `${rect.left}px`, width: `${rect.width}px` });
 	}
 }

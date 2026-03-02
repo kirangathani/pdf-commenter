@@ -398,3 +398,8 @@
     font-size: 12px;
     margin: 8px 0 0 0;
 }
+
+/* Generic utility: hide elements via class toggle */
+.is-hidden {
+    display: none;
+}

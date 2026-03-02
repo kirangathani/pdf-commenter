@@ -1,5 +1,9 @@
-import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath } from 'obsidian';
+import { FileView, WorkspaceLeaf, TFile, TFolder, MarkdownRenderer, normalizePath, FileSystemAdapter } from 'obsidian';
 import { WikilinkSuggest } from './wikilink-suggest';
+import { ContextMenuAction } from './context-menu';
+import type { IPDFViewer } from './pdf-viewer';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 export const VIEW_TYPE_PDF_COMMENTER = 'pdf-commenter-view';
 
@@ -21,6 +25,13 @@ type PdfAnnotationsFile = {
     annotations: PdfAnnotation[];
 };
 
+// Narrow interface for accessing internal Obsidian app properties
+interface ObsidianAppInternal {
+    plugins?: {
+        plugins?: Record<string, { manifest?: { dir?: string } }>;
+    };
+}
+
 function normalizePluginDir(input: string): string {
     // Handle values like:
     // - "magnifying-glass"
@@ -31,27 +42,22 @@ function normalizePluginDir(input: string): string {
     return parts.length ? parts[parts.length - 1] : s;
 }
 
-async function createPdfJsWorkerBlobUrl(pluginDir: string, basePath?: string): Promise<string | undefined> {
+function createPdfJsWorkerBlobUrl(pluginDir: string, basePath: string | undefined, configDir: string): string | undefined {
     // Desktop-only: use Node fs to read the worker file from the plugin folder and create a blob URL.
     try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const fs = require('fs');
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const path = require('path');
-
         if (!basePath) {
             console.warn('[pdf-worker] basePath is undefined');
             return undefined;
         }
 
         const normalizedDir = normalizePluginDir(pluginDir);
-        const workerPath = path.join(basePath, '.obsidian', 'plugins', normalizedDir, 'pdf.worker.js');
-        if (!fs.existsSync(workerPath)) {
+        const workerPath = join(basePath, configDir, 'plugins', normalizedDir, 'pdf.worker.js');
+        if (!existsSync(workerPath)) {
             console.warn('[pdf-worker] worker not found at', workerPath);
             return undefined;
         }
 
-        const workerCode = fs.readFileSync(workerPath, 'utf8');
+        const workerCode = readFileSync(workerPath, 'utf8');
         // Use a blob URL to avoid CORS restrictions from `app://obsidian.md` when loading module workers.
         const blob = new Blob([workerCode], { type: 'text/javascript' });
         return URL.createObjectURL(blob);
@@ -61,31 +67,32 @@ async function createPdfJsWorkerBlobUrl(pluginDir: string, basePath?: string): P
     }
 }
 
-async function resolvePdfWorkerSrc(
+function resolvePdfWorkerSrc(
     pluginDirCandidates: string[],
-    basePath?: string
-): Promise<string | undefined> {
+    basePath: string | undefined,
+    configDir: string
+): string | undefined {
     for (const dir of pluginDirCandidates) {
         if (!dir) continue;
-        const src = await createPdfJsWorkerBlobUrl(dir, basePath);
+        const src = createPdfJsWorkerBlobUrl(dir, basePath, configDir);
         if (src) return src;
     }
     return undefined;
 }
 
 // Lazy load PDF viewer to avoid import issues
-let PDFViewerComponent: any = null;
+let PDFViewerComponentCtor: (typeof import('./pdf-viewer'))['PDFViewerComponent'] | null = null;
 async function getPDFViewerComponent() {
-    if (!PDFViewerComponent) {
+    if (!PDFViewerComponentCtor) {
         const module = await import('./pdf-viewer');
-        PDFViewerComponent = module.PDFViewerComponent;
+        PDFViewerComponentCtor = module.PDFViewerComponent;
     }
-    return PDFViewerComponent;
+    return PDFViewerComponentCtor;
 }
 
 export class PdfCommenterView extends FileView {
     private pdfContainer: HTMLElement;
-    private pdfViewer: any = null;
+    private pdfViewer: IPDFViewer | null = null;
     private controlsSection: HTMLElement;
     private viewerRow: HTMLElement;
     private commentsPane: HTMLElement;
@@ -132,15 +139,14 @@ export class PdfCommenterView extends FileView {
         return extension === 'pdf';
     }
 
-    private getContextMenuActions(): any[] {
+    private getContextMenuActions(): ContextMenuAction[] {
         return [
             {
                 id: 'copy',
                 label: 'Copy',
                 icon: '📋',
                 callback: (text: string) => {
-                    navigator.clipboard.writeText(text);
-                    console.log('Copied to clipboard:', text);
+                    void navigator.clipboard.writeText(text);
                 }
             },
             {
@@ -154,18 +160,18 @@ export class PdfCommenterView extends FileView {
             },
             {
                 id: 'copy-to-note',
-                label: 'Copy to Active Note',
+                label: 'Copy to active note',
                 icon: '📝',
                 callback: (text: string) => {
-                    this.copyToActiveNote(text);
+                    void this.copyToActiveNote(text);
                 }
             },
             {
                 id: 'create-note',
-                label: 'Create Note from Selection',
+                label: 'Create note from selection',
                 icon: '➕',
                 callback: (text: string) => {
-                    this.createNoteFromSelection(text);
+                    void this.createNoteFromSelection(text);
                 }
             }
         ];
@@ -176,44 +182,33 @@ export class PdfCommenterView extends FileView {
         if (activeFile && activeFile.extension === 'md') {
             const content = await this.app.vault.read(activeFile);
             await this.app.vault.modify(activeFile, content + '\n\n' + text);
-            console.log('Added to note:', activeFile.path);
-        } else {
-            console.log('No active markdown file');
         }
     }
 
     private async createNoteFromSelection(text: string): Promise<void> {
         const fileName = `PDF Extract ${Date.now()}.md`;
         await this.app.vault.create(fileName, text);
-        console.log('Created note:', fileName);
     }
 
     async onOpen(): Promise<void> {
-        console.log('=== PDF VIEWER ONOPEN START ===');
+        await super.onOpen();
         try {
             const container = this.contentEl;
             container.empty();
             container.addClass('pdf-view-container');
-            // Force sane layout so content can't end up effectively zero-height/invisible due to parent styles.
-            // (We keep this minimal; visuals are handled by styles.css)
-            container.style.display = 'flex';
-            container.style.flexDirection = 'column';
-            container.style.height = '100%';
-            container.style.overflow = 'hidden';
-            container.style.minHeight = '0';
-            
+
             // Create controls section
             this.controlsSection = container.createEl('div', { cls: 'controls-section' });
-            
+
             // Header
             this.controlsSection.createEl('h2', { text: 'PDF Viewer' });
-            
+
             // Zoom controls
             const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
 
-            this.zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' }) as HTMLButtonElement;
-            this.zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' }) as HTMLSpanElement;
-            this.zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' }) as HTMLButtonElement;
+            this.zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' });
+            this.zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' });
+            this.zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' });
 
             // Initial state (no PDF loaded yet)
             this.updateZoomButtonsState();
@@ -223,7 +218,6 @@ export class PdfCommenterView extends FileView {
 
             // Create PDF container (left)
             this.pdfContainer = this.viewerRow.createEl('div', { cls: 'pdf-viewer-container' });
-            this.pdfContainer.style.minHeight = '0';
 
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
@@ -259,7 +253,7 @@ export class PdfCommenterView extends FileView {
                 if (!this.pdfContainer) return null;
                 const A = this.pdfContainer.clientHeight / 2;
                 const centerY = this.pdfContainer.scrollTop + A;
-                const pages = Array.from(this.pdfContainer.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+                const pages = Array.from(this.pdfContainer.querySelectorAll<HTMLElement>('.pdf-page-container'));
                 for (const pageEl of pages) {
                     const top = pageEl.offsetTop;
                     const bottom = top + pageEl.offsetHeight;
@@ -274,9 +268,9 @@ export class PdfCommenterView extends FileView {
 
             const restoreViewportCenterAnchor = (anchor: { pageNumber: number; yNorm: number } | null) => {
                 if (!anchor || !this.pdfContainer) return;
-                const pageEl = this.pdfContainer.querySelector(
+                const pageEl = this.pdfContainer.querySelector<HTMLElement>(
                     `.pdf-page-container[data-page-number="${anchor.pageNumber}"]`
-                ) as HTMLElement | null;
+                );
                 if (!pageEl) return;
                 const A = this.pdfContainer.clientHeight / 2;
                 const topPx = pageEl.offsetTop + (anchor.yNorm * pageEl.offsetHeight);
@@ -288,34 +282,34 @@ export class PdfCommenterView extends FileView {
 
             const schedulePinchCommit = () => {
                 if (pinchCommitTimer) window.clearTimeout(pinchCommitTimer);
-                pinchCommitTimer = window.setTimeout(async () => {
-                    if (!this.pdfViewer || pinchTargetScale == null) return;
-                    const anchor = getViewportCenterAnchor();
-                    const anchorByScroll = getViewportCenterAnchorByScroll();
-                    // IMPORTANT: during pinch preview we apply a CSS transform to the scroll container.
-                    // `elementFromPoint` operates in transformed (visual) coordinates, while our restore uses
-                    // untransformed layout metrics (offsetTop/offsetHeight). Prefer the scroll-based anchor
-                    // so the coordinate system matches restoreViewportCenterAnchor.
-                    const anchorChosen = anchorByScroll ?? anchor;
-                    try {
-                        this.isZooming = true;
-                        this.updateZoomButtonsState();
-                        await this.pdfViewer.setScale(pinchTargetScale);
-                        // Ensure we end in a non-preview state
-                        if (typeof this.pdfViewer.clearPreviewScale === 'function') {
+                pinchCommitTimer = window.setTimeout(() => {
+                    void (async () => {
+                        if (!this.pdfViewer || pinchTargetScale == null) return;
+                        const anchor = getViewportCenterAnchor();
+                        const anchorByScroll = getViewportCenterAnchorByScroll();
+                        // IMPORTANT: during pinch preview we apply a CSS transform to the scroll container.
+                        // `elementFromPoint` operates in transformed (visual) coordinates, while our restore uses
+                        // untransformed layout metrics (offsetTop/offsetHeight). Prefer the scroll-based anchor
+                        // so the coordinate system matches restoreViewportCenterAnchor.
+                        const anchorChosen = anchorByScroll ?? anchor;
+                        try {
+                            this.isZooming = true;
+                            this.updateZoomButtonsState();
+                            await this.pdfViewer.setScale(pinchTargetScale);
+                            // Ensure we end in a non-preview state
                             this.pdfViewer.clearPreviewScale();
+                            // Keep the viewport centered on the same PDF spot after the real layout change.
+                            restoreViewportCenterAnchor(anchorChosen);
+                            this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
+                        } finally {
+                            this.isZooming = false;
+                            this.updateZoomButtonsState();
+                            this.updateCommentsTrackHeight();
+                            this.renderCommentMarkers();
+                            this.renderHighlights();
+                            pinchTargetScale = null;
                         }
-                        // Keep the viewport centered on the same PDF spot after the real layout change.
-                        restoreViewportCenterAnchor(anchorChosen);
-                        this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
-                    } finally {
-                        this.isZooming = false;
-                        this.updateZoomButtonsState();
-                        this.updateCommentsTrackHeight();
-                        this.renderCommentMarkers();
-                        this.renderHighlights();
-                        pinchTargetScale = null;
-                    }
+                    })();
                 }, 160);
             };
             if (!this.pinchWheelHandler) {
@@ -331,12 +325,10 @@ export class PdfCommenterView extends FileView {
 
                     // Consume so Obsidian/global zoom handlers don't interfere.
                     e.preventDefault();
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    (e as any).stopImmediatePropagation?.();
+                    e.stopImmediatePropagation();
                     e.stopPropagation();
 
-                    const currentScale =
-                        (typeof this.pdfViewer.getScale === 'function' ? this.pdfViewer.getScale() : 1.5) as number;
+                    const currentScale = this.pdfViewer.getScale();
                     const base = pinchTargetScale ?? currentScale;
 
                     // Smooth exponential mapping. deltaY > 0 means "zoom out" on Chromium.
@@ -361,9 +353,7 @@ export class PdfCommenterView extends FileView {
                     }
 
                     // Preview zoom (visual only)
-                    if (typeof this.pdfViewer.setPreviewScale === 'function') {
-                        this.pdfViewer.setPreviewScale(next);
-                    }
+                    this.pdfViewer.setPreviewScale(next);
                     this.zoomLabel.textContent = `${Math.round(next * 100)}%`;
 
                     // Let the user keep pinching; commit after a short pause.
@@ -417,12 +407,11 @@ export class PdfCommenterView extends FileView {
                         (e.key === 'm' || e.key === 'M' || e.code === 'KeyM');
                     if (isCommentHotkey) {
                         // Only handle if this view is the active view
-                        if (this.app.workspace.activeLeaf?.view !== this) return;
+                        if (this.app.workspace.getActiveViewOfType(PdfCommenterView) !== this) return;
                         const text = window.getSelection()?.toString().trim() ?? '';
                         if (!text) return;
                         e.preventDefault();
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        (e as any).stopImmediatePropagation?.();
+                        e.stopImmediatePropagation();
                         e.stopPropagation();
                         void this.handleCommentAction(text, { focusEditor: true });
                         return;
@@ -435,8 +424,7 @@ export class PdfCommenterView extends FileView {
                     if (!isCombo) return;
                     e.preventDefault();
                     // stop immediately so Obsidian/global handlers don't swallow it
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    (e as any).stopImmediatePropagation?.();
+                    e.stopImmediatePropagation();
                     e.stopPropagation();
                     void this.activeInlineSave?.();
                 };
@@ -461,45 +449,46 @@ export class PdfCommenterView extends FileView {
             this.commentsPane.addEventListener('scroll', () => syncScroll('comments'), { passive: true });
 
             // Zoom handlers
-            this.zoomOutBtn.addEventListener('click', async () => {
-                if (this.pdfViewer) {
-                    try {
-                        this.isZooming = true;
-                        this.updateZoomButtonsState();
-                        const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
-                        await this.pdfViewer.setScale(newScale);
-                        this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
-                    } finally {
-                        this.isZooming = false;
-                        this.updateZoomButtonsState();
-                        this.updateCommentsTrackHeight();
-                        this.renderCommentMarkers();
-                        this.renderHighlights();
+            this.zoomOutBtn.addEventListener('click', () => {
+                void (async () => {
+                    if (this.pdfViewer) {
+                        try {
+                            this.isZooming = true;
+                            this.updateZoomButtonsState();
+                            const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
+                            await this.pdfViewer.setScale(newScale);
+                            this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                        } finally {
+                            this.isZooming = false;
+                            this.updateZoomButtonsState();
+                            this.updateCommentsTrackHeight();
+                            this.renderCommentMarkers();
+                            this.renderHighlights();
+                        }
                     }
-                }
+                })();
             });
 
-            this.zoomInBtn.addEventListener('click', async () => {
-                if (this.pdfViewer) {
-                    try {
-                        this.isZooming = true;
-                        this.updateZoomButtonsState();
-                        const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
-                        await this.pdfViewer.setScale(newScale);
-                        this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
-                    } finally {
-                        this.isZooming = false;
-                        this.updateZoomButtonsState();
-                        this.updateCommentsTrackHeight();
-                        this.renderCommentMarkers();
-                        this.renderHighlights();
+            this.zoomInBtn.addEventListener('click', () => {
+                void (async () => {
+                    if (this.pdfViewer) {
+                        try {
+                            this.isZooming = true;
+                            this.updateZoomButtonsState();
+                            const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
+                            await this.pdfViewer.setScale(newScale);
+                            this.zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                        } finally {
+                            this.isZooming = false;
+                            this.updateZoomButtonsState();
+                            this.updateCommentsTrackHeight();
+                            this.renderCommentMarkers();
+                            this.renderHighlights();
+                        }
                     }
-                }
+                })();
             });
-            
-            console.log('PDF VIEWER contentEl innerHTML:', container.innerHTML);
-            console.log('=== PDF VIEWER ONOPEN COMPLETE ===');
-            
+
         } catch (error) {
             console.error('PDF Viewer onOpen error:', error);
         }
@@ -520,12 +509,13 @@ export class PdfCommenterView extends FileView {
     }
 
     async onClose(): Promise<void> {
+        await super.onClose();
         if (this.pdfViewer) {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
         }
         if (this.pinchWheelHandler) {
-            try { this.pdfContainer?.removeEventListener('wheel', this.pinchWheelHandler as any); } catch { /* ignore */ }
+            try { this.pdfContainer?.removeEventListener('wheel', this.pinchWheelHandler as EventListener); } catch { /* ignore */ }
             this.pinchWheelHandler = null;
         }
         if (this.inlineKeyHandler) {
@@ -548,19 +538,17 @@ export class PdfCommenterView extends FileView {
         }
     }
 
-    private async resolveWorkerSrc(): Promise<string | undefined> {
-        const adapter: any = this.app.vault.adapter as any;
-        const basePath =
-            (typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : undefined) ??
-            (adapter?.basePath as string | undefined);
-        const runtimeDir =
-            (this.app as any)?.plugins?.plugins?.[this.pluginId]?.manifest?.dir as string | undefined;
+    private resolveWorkerSrc(): string | undefined {
+        const adapter = this.app.vault.adapter;
+        if (!(adapter instanceof FileSystemAdapter)) return undefined;
+        const basePath = adapter.getBasePath();
+        const appInternal = this.app as unknown as ObsidianAppInternal;
+        const runtimeDir = appInternal?.plugins?.plugins?.[this.pluginId]?.manifest?.dir;
         const candidates: string[] = Array.from(
             new Set([this.pluginDir, runtimeDir, this.pluginId].filter((v): v is string => Boolean(v)))
         );
-        const workerSrc = await resolvePdfWorkerSrc(candidates, basePath);
-        console.log('[pdf-worker] basePath=', basePath, 'candidates=', candidates, 'workerSrc=', workerSrc);
-        return workerSrc;
+        const configDir = this.app.vault.configDir;
+        return resolvePdfWorkerSrc(candidates, basePath, configDir);
     }
 
     async onLoadFile(file: TFile): Promise<void> {
@@ -584,7 +572,7 @@ export class PdfCommenterView extends FileView {
 
             // Create new viewer (lazy loaded)
             const ViewerClass = await getPDFViewerComponent();
-            const workerSrc = await this.resolveWorkerSrc();
+            const workerSrc = this.resolveWorkerSrc();
             if (!workerSrc) {
                 throw new Error('[pdf-worker] Could not resolve workerSrc');
             }
@@ -601,9 +589,10 @@ export class PdfCommenterView extends FileView {
             this.renderHighlights();
 
             this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error loading PDF:', error);
-            this.showMessage(`Error: ${error.message}`, 'error');
+            const message = error instanceof Error ? error.message : String(error);
+            this.showMessage(`Error: ${message}`, 'error');
             if (this.pdfViewer) {
                 try { this.pdfViewer.destroy(); } catch { /* ignore */ }
                 this.pdfViewer = null;
@@ -617,6 +606,7 @@ export class PdfCommenterView extends FileView {
     }
 
     async onUnloadFile(file: TFile): Promise<void> {
+        await super.onUnloadFile(file);
         if (this.pdfViewer) {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
@@ -640,7 +630,7 @@ export class PdfCommenterView extends FileView {
     private updateCommentsTrackHeight(): void {
         if (!this.commentsTrack || !this.pdfContainer) return;
         // Keep the comments track the same scrollable height as the PDF container content
-        this.commentsTrack.style.height = `${this.pdfContainer.scrollHeight}px`;
+        this.commentsTrack.setCssStyles({ height: `${this.pdfContainer.scrollHeight}px` });
     }
 
     private renderCommentMarkers(): void {
@@ -654,9 +644,9 @@ export class PdfCommenterView extends FileView {
         // Phase 1: Compute ideal top positions
         const items: { annotation: typeof this.annotations[0]; idealTop: number }[] = [];
         for (const a of this.annotations) {
-            const pageEl = this.pdfContainer.querySelector(
+            const pageEl = this.pdfContainer.querySelector<HTMLElement>(
                 `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
-            ) as HTMLElement | null;
+            );
             if (!pageEl) continue;
             items.push({ annotation: a, idealTop: pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight) });
         }
@@ -672,7 +662,7 @@ export class PdfCommenterView extends FileView {
             nextAvailableTop = placedTop + MARKER_HEIGHT + MARKER_GAP;
 
             const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
-            marker.style.top = `${placedTop}px`;
+            marker.setCssStyles({ top: `${placedTop}px` });
 
             marker.dataset.annotationId = a.id;
             marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
@@ -816,16 +806,16 @@ export class PdfCommenterView extends FileView {
 
         // Extend track height if pushed-down markers exceed the PDF scroll height
         if (nextAvailableTop > this.pdfContainer.scrollHeight) {
-            this.commentsTrack.style.height = `${nextAvailableTop}px`;
+            this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
         }
     }
 
     private renderHighlights(): void {
         if (!this.pdfContainer) return;
 
-        const pages = Array.from(this.pdfContainer.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const pages = Array.from(this.pdfContainer.querySelectorAll<HTMLElement>('.pdf-page-container'));
         for (const pageEl of pages) {
-            let layer = pageEl.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+            let layer = pageEl.querySelector<HTMLElement>('.pdf-highlight-layer');
             if (!layer) {
                 layer = pageEl.createEl('div', { cls: 'pdf-highlight-layer' });
             }
@@ -835,12 +825,12 @@ export class PdfCommenterView extends FileView {
         // Draw rects per page from all annotations
         for (const ann of this.annotations) {
             for (const pr of ann.highlights) {
-                const pageEl = this.pdfContainer.querySelector(
+                const pageEl = this.pdfContainer.querySelector<HTMLElement>(
                     `.pdf-page-container[data-page-number="${pr.pageNumber}"]`
-                ) as HTMLElement | null;
+                );
                 if (!pageEl) continue;
 
-                const layer = pageEl.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+                const layer = pageEl.querySelector<HTMLElement>('.pdf-highlight-layer');
                 if (!layer) continue;
 
                 const pageW = pageEl.clientWidth || pageEl.offsetWidth;
@@ -849,10 +839,12 @@ export class PdfCommenterView extends FileView {
 
                 for (const r of pr.rects) {
                     const el = layer.createEl('div', { cls: 'pdf-highlight-rect' });
-                    el.style.left = `${r.x * pageW}px`;
-                    el.style.top = `${r.y * pageH}px`;
-                    el.style.width = `${r.w * pageW}px`;
-                    el.style.height = `${r.h * pageH}px`;
+                    el.setCssStyles({
+                        left: `${r.x * pageW}px`,
+                        top: `${r.y * pageH}px`,
+                        width: `${r.w * pageW}px`,
+                        height: `${r.h * pageH}px`,
+                    });
                 }
             }
         }
@@ -921,8 +913,7 @@ export class PdfCommenterView extends FileView {
                 return candidate;
             }
             // If it exists and is a folder, reuse it
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            if ((existing as any)?.children) return candidate;
+            if (existing instanceof TFolder) return candidate;
             i += 1;
             candidate = normalizePath(`${base}_${i}`);
         }
@@ -994,7 +985,7 @@ export class PdfCommenterView extends FileView {
                 container.dataset.mgSource = af.path;
                 const { body } = this.stripFrontmatter(md);
                 const { commentBody } = this.splitLeadingQuote(body);
-                await MarkdownRenderer.renderMarkdown(commentBody, container, af.path, this);
+                await MarkdownRenderer.render(this.app, commentBody, container, af.path, this);
                 return;
             }
         }
@@ -1081,11 +1072,11 @@ export class PdfCommenterView extends FileView {
         this.annotations.splice(idx, 1);
         await this.saveAnnotationsForCurrentPdf();
 
-        // Delete the backing note if it exists
+        // Trash the backing note if it exists
         if (ann.notePath) {
             const noteFile = this.app.vault.getAbstractFileByPath(ann.notePath);
             if (noteFile instanceof TFile) {
-                try { await this.app.vault.delete(noteFile); } catch { /* ignore */ }
+                try { await this.app.fileManager.trashFile(noteFile); } catch { /* ignore */ }
             }
         }
 
@@ -1145,7 +1136,6 @@ export class PdfCommenterView extends FileView {
 
         const anchor = this.getSelectionAnchorFromCurrentSelection();
         if (!anchor) {
-            console.log('[comment] No selection anchor available');
             return;
         }
 
@@ -1183,14 +1173,6 @@ export class PdfCommenterView extends FileView {
             this.pendingNoteCreation.set(ann.id, createPromise);
             void createPromise.finally(() => this.pendingNoteCreation.delete(ann.id));
         }
-
-        console.log('[comment]', {
-            selectedText: text,
-            pageNumber: anchor.pageNumber,
-            yNorm: anchor.yNorm,
-            yPercent: Math.round(anchor.yNorm * 10000) / 100, // 2dp
-            highlightPages: highlights.map(h => h.pageNumber),
-        });
     }
 
     private getSelectionAnchorFromCurrentSelection(): { pageNumber: number; yNorm: number } | null {

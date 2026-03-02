@@ -1,35 +1,79 @@
 import { ContextMenu, ContextMenuAction } from './context-menu';
+import * as pdfjsLibModule from 'pdfjs-dist/build/pdf.js';
 
-// PDF.js types
-type PDFDocumentProxy = any;
-type PDFPageProxy = any;
-type TextContent = any;
-type PageViewport = any;
-
-// Load PDF.js using require (CommonJS compatible)
-let pdfjsLib: any = null;
-
-function getPdfJs(): any {
-    if (pdfjsLib) return pdfjsLib;
-    
-    try {
-        // Use the classic build from pdfjs-dist@2.x for compatibility
-        pdfjsLib = require('pdfjs-dist/build/pdf.js');
-        // NOTE: We run PDF.js without a worker (see getDocument({ disableWorker: true }) below),
-        // because worker URLs are finicky inside Obsidian's plugin environment.
-        console.log('PDF.js loaded successfully');
-        return pdfjsLib;
-    } catch (error) {
-        console.error('Failed to load PDF.js:', error);
-        throw error;
-    }
+// PDF.js interfaces covering the subset of API we actually use
+interface PDFRenderTask {
+    promise?: Promise<void>;
+    cancel(): void;
 }
+
+interface PDFPageProxy {
+    getViewport(params: { scale: number }): PageViewport;
+    render(params: { canvasContext: CanvasRenderingContext2D; viewport: PageViewport }): PDFRenderTask;
+    getTextContent(): Promise<TextContent>;
+}
+
+interface PageViewport {
+    width: number;
+    height: number;
+    transform: number[];
+}
+
+interface PDFTextItem {
+    str: string;
+    transform: number[];
+    fontName?: string;
+}
+
+interface TextContent {
+    items: (PDFTextItem | Record<string, unknown>)[];
+}
+
+interface PDFDocumentProxy {
+    numPages: number;
+    getPage(pageNumber: number): Promise<PDFPageProxy>;
+    destroy(): void;
+}
+
+interface PDFLoadingTask {
+    promise: Promise<PDFDocumentProxy>;
+}
+
+interface PDFJsLibrary {
+    GlobalWorkerOptions?: { workerSrc: string };
+    getDocument(params: { data: ArrayBuffer }): PDFLoadingTask;
+    renderTextLayer?(params: {
+        textContent: TextContent;
+        container: HTMLElement;
+        viewport: PageViewport;
+        textDivs: HTMLElement[];
+        enhanceTextSelection?: boolean;
+    }): { promise?: Promise<void> };
+    Util: { transform(a: number[], b: number[]): number[] };
+}
+
+/**
+ * Public interface for PDFViewerComponent, consumed by view.ts.
+ */
+export interface IPDFViewer {
+    loadPdf(data: ArrayBuffer): Promise<void>;
+    setScale(scale: number): Promise<void>;
+    getScale(): number;
+    getPageCount(): number;
+    setPreviewScale(scale: number): void;
+    clearPreviewScale(): void;
+    setOnTextSelected(callback: (text: string) => void): void;
+    getSelectedText(): string;
+    destroy(): void;
+}
+
+const pdfjsLib: PDFJsLibrary = pdfjsLibModule as unknown as PDFJsLibrary;
 
 /**
  * Custom PDF Viewer using PDF.js
  * Renders PDF pages with text layer for selection
  */
-export class PDFViewerComponent {
+export class PDFViewerComponent implements IPDFViewer {
     private container: HTMLElement;
     private pdfDoc: PDFDocumentProxy | null = null;
     private currentScale: number = 1.5;
@@ -40,7 +84,7 @@ export class PDFViewerComponent {
     private revokeWorkerSrc?: boolean;
     private previewScale: number | null = null;
     private renderGeneration: number = 0;
-    private inFlightRenderTasks: Map<number, any> = new Map();
+    private inFlightRenderTasks: Map<number, PDFRenderTask> = new Map();
     private backgroundRenderGen: number | null = null;
 
     constructor(
@@ -52,13 +96,13 @@ export class PDFViewerComponent {
         this.container.classList.add('pdf-viewer');
         this.workerSrc = options?.workerSrc;
         this.revokeWorkerSrc = options?.revokeWorkerSrc;
-        
+
         // Create context menu
         this.contextMenu = new ContextMenu(contextMenuActions);
-        
+
         // Set up right-click handler
         this.container.addEventListener('contextmenu', (e) => this.handleContextMenu(e));
-        
+
         // Set up selection change handler
         this.container.addEventListener('mouseup', () => this.handleSelectionChange());
     }
@@ -76,13 +120,13 @@ export class PDFViewerComponent {
     }
 
     private getScrollContainer(): HTMLElement | null {
-        return this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+        return this.container.querySelector<HTMLElement>('.pdf-scroll-container');
     }
 
     private getOrderedPageNumbersFromDom(): number[] {
         const sc = this.getScrollContainer();
         if (!sc) return [];
-        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const els = Array.from(sc.querySelectorAll<HTMLElement>('.pdf-page-container'));
         const nums: number[] = [];
         for (const el of els) {
             const n = Number(el.dataset.pageNumber ?? NaN);
@@ -101,7 +145,7 @@ export class PDFViewerComponent {
         const topBound = Math.max(0, viewTop - bufferPx);
         const bottomBound = viewBottom + bufferPx;
 
-        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const els = Array.from(sc.querySelectorAll<HTMLElement>('.pdf-page-container'));
         const out: number[] = [];
         for (const el of els) {
             const top = el.offsetTop;
@@ -117,12 +161,12 @@ export class PDFViewerComponent {
     private scaleExistingPageBoxSizes(factor: number): void {
         const sc = this.getScrollContainer();
         if (!sc) return;
-        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const els = Array.from(sc.querySelectorAll<HTMLElement>('.pdf-page-container'));
         for (const el of els) {
             const w0 = parseFloat(el.style.width) || el.offsetWidth || 0;
             const h0 = parseFloat(el.style.height) || el.offsetHeight || 0;
-            if (w0 > 0) el.style.width = `${w0 * factor}px`;
-            if (h0 > 0) el.style.height = `${h0 * factor}px`;
+            if (w0 > 0) el.setCssStyles({ width: `${w0 * factor}px` });
+            if (h0 > 0) el.setCssStyles({ height: `${h0 * factor}px` });
         }
     }
 
@@ -134,19 +178,17 @@ export class PDFViewerComponent {
         if (!sc) return;
 
         const pageContainer = this.pageContainers.get(pageNum) ??
-            (sc.querySelector(`.pdf-page-container[data-page-number="${pageNum}"]`) as HTMLElement | null);
+            sc.querySelector<HTMLElement>(`.pdf-page-container[data-page-number="${pageNum}"]`);
         if (!pageContainer) return;
         this.pageContainers.set(pageNum, pageContainer);
 
-        const pdfjs = getPdfJs();
         const page: PDFPageProxy = await this.pdfDoc.getPage(pageNum);
         if (generation !== this.renderGeneration) return;
 
         const viewport = page.getViewport({ scale: this.currentScale });
-        pageContainer.style.width = `${viewport.width}px`;
-        pageContainer.style.height = `${viewport.height}px`;
+        pageContainer.setCssStyles({ width: `${viewport.width}px`, height: `${viewport.height}px` });
 
-        const highlightLayer = pageContainer.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+        const highlightLayer = pageContainer.querySelector<HTMLElement>('.pdf-highlight-layer');
         const oldCanvases = Array.from(pageContainer.querySelectorAll('.pdf-page-canvas'));
         const oldTextLayers = Array.from(pageContainer.querySelectorAll('.pdf-text-layer'));
 
@@ -166,7 +208,7 @@ export class PDFViewerComponent {
                 await renderTask.promise;
             } else {
                 // Older PDF.js may return a promise directly
-                await (renderTask as any);
+                await (renderTask as PDFRenderTask | Promise<void>);
             }
         } catch {
             // cancelled or failed; ignore if superseded
@@ -193,7 +235,7 @@ export class PDFViewerComponent {
         textLayerDiv.className = 'pdf-text-layer';
         const textContent = await page.getTextContent();
         if (generation !== this.renderGeneration) return;
-        await this.renderTextLayer(textLayerDiv, textContent, viewport, pdfjs);
+        await this.renderTextLayer(textLayerDiv, textContent, viewport);
         if (generation !== this.renderGeneration) return;
 
         for (const el of oldTextLayers) {
@@ -241,9 +283,8 @@ export class PDFViewerComponent {
         };
 
         // Prefer idle time if available; fall back to setTimeout.
-        const ric = (window as any).requestIdleCallback as ((cb: () => void) => number) | undefined;
-        if (typeof ric === 'function') {
-            ric(() => { void run(); });
+        if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(() => { void run(); });
         } else {
             window.setTimeout(() => { void run(); }, 0);
         }
@@ -256,12 +297,11 @@ export class PDFViewerComponent {
      */
     setPreviewScale(scale: number): void {
         this.previewScale = scale;
-        const scrollContainer = this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+        const scrollContainer = this.container.querySelector<HTMLElement>('.pdf-scroll-container');
         if (!scrollContainer) return;
 
         const factor = scale / (this.currentScale || 1);
-        scrollContainer.style.transformOrigin = '0 0';
-        scrollContainer.style.transform = `scale(${factor})`;
+        scrollContainer.setCssStyles({ transformOrigin: '0 0', transform: `scale(${factor})` });
     }
 
     /**
@@ -269,10 +309,9 @@ export class PDFViewerComponent {
      */
     clearPreviewScale(): void {
         this.previewScale = null;
-        const scrollContainer = this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+        const scrollContainer = this.container.querySelector<HTMLElement>('.pdf-scroll-container');
         if (!scrollContainer) return;
-        scrollContainer.style.transform = '';
-        scrollContainer.style.transformOrigin = '';
+        scrollContainer.setCssStyles({ transform: '', transformOrigin: '' });
     }
 
     /**
@@ -280,29 +319,25 @@ export class PDFViewerComponent {
      */
     async loadPdf(data: ArrayBuffer): Promise<void> {
         try {
-            // Get PDF.js library
-            const pdfjs = getPdfJs();
-            if (this.workerSrc && pdfjs?.GlobalWorkerOptions) {
-                pdfjs.GlobalWorkerOptions.workerSrc = this.workerSrc;
+            if (this.workerSrc && pdfjsLib?.GlobalWorkerOptions) {
+                pdfjsLib.GlobalWorkerOptions.workerSrc = this.workerSrc;
             }
             // Ensure no stale preview transform survives a fresh load.
             this.clearPreviewScale();
-            
+
             // Clear previous content
             this.container.empty();
             this.pageContainers.clear();
-            
+
             // Load the PDF document
-            const loadingTask = pdfjs.getDocument({ data });
+            const loadingTask = pdfjsLib.getDocument({ data });
             this.pdfDoc = await loadingTask.promise;
-            
-            console.log(`PDF loaded: ${this.pdfDoc.numPages} pages`);
-            
+
             // Create scroll container
             const scrollContainer = document.createElement('div');
             scrollContainer.className = 'pdf-scroll-container';
             this.container.appendChild(scrollContainer);
-            
+
             // Render all pages
             for (let pageNum = 1; pageNum <= this.pdfDoc.numPages; pageNum++) {
                 await this.renderPage(pageNum, scrollContainer);
@@ -318,46 +353,44 @@ export class PDFViewerComponent {
      */
     private async renderPage(pageNum: number, scrollContainer: HTMLElement): Promise<void> {
         if (!this.pdfDoc) return;
-        
-        const pdfjs = getPdfJs();
+
         const page = await this.pdfDoc.getPage(pageNum);
         const viewport = page.getViewport({ scale: this.currentScale });
-        
+
         // Create page container
         const pageContainer = document.createElement('div');
         pageContainer.className = 'pdf-page-container';
-        pageContainer.style.width = `${viewport.width}px`;
-        pageContainer.style.height = `${viewport.height}px`;
+        pageContainer.setCssStyles({ width: `${viewport.width}px`, height: `${viewport.height}px` });
         pageContainer.dataset.pageNumber = String(pageNum);
         this.pageContainers.set(pageNum, pageContainer);
-        
+
         // Create canvas for rendering
         const canvas = document.createElement('canvas');
         canvas.className = 'pdf-page-canvas';
         const context = canvas.getContext('2d');
         if (!context) return;
-        
+
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        
+
         // Render the page to canvas
         await page.render({
             canvasContext: context,
             viewport: viewport
         }).promise;
-        
+
         pageContainer.appendChild(canvas);
-        
+
         // Create text layer for selection
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'pdf-text-layer';
-        
+
         // Get text content
         const textContent = await page.getTextContent();
-        
+
         // Render text layer
-        await this.renderTextLayer(textLayerDiv, textContent, viewport, pdfjs);
-        
+        await this.renderTextLayer(textLayerDiv, textContent, viewport);
+
         pageContainer.appendChild(textLayerDiv);
         scrollContainer.appendChild(pageContainer);
     }
@@ -369,14 +402,13 @@ export class PDFViewerComponent {
         container: HTMLElement,
         textContent: TextContent,
         viewport: PageViewport,
-        pdfjs: any
     ): Promise<void> {
         // Use PDF.js built-in text layer renderer for correct positioning/selection.
         container.innerHTML = '';
         container.classList.add('textLayer');
 
-        if (typeof pdfjs.renderTextLayer === 'function') {
-            const task = pdfjs.renderTextLayer({
+        if (typeof pdfjsLib.renderTextLayer === 'function') {
+            const task = pdfjsLib.renderTextLayer({
                 textContent,
                 container,
                 viewport,
@@ -390,18 +422,21 @@ export class PDFViewerComponent {
 
         // Fallback: keep our simple renderer if renderTextLayer isn't available.
         for (const item of textContent.items) {
-            if ('str' in item && (item as any).str) {
-                const textItem = item as any;
+            if ('str' in item) {
+                const textItem = item as PDFTextItem;
+                if (!textItem.str) continue;
                 const span = document.createElement('span');
                 span.textContent = textItem.str;
-                const tx = pdfjs.Util.transform(viewport.transform, textItem.transform);
+                const tx = pdfjsLib.Util.transform(viewport.transform, textItem.transform);
                 const fontHeight = Math.sqrt((tx[2] * tx[2]) + (tx[3] * tx[3]));
                 const left = tx[4];
                 const top = tx[5] - fontHeight;
-                span.style.left = `${left}px`;
-                span.style.top = `${top}px`;
-                span.style.fontSize = `${fontHeight}px`;
-                span.style.fontFamily = textItem.fontName || 'sans-serif';
+                span.setCssStyles({
+                    left: `${left}px`,
+                    top: `${top}px`,
+                    fontSize: `${fontHeight}px`,
+                    fontFamily: textItem.fontName || 'sans-serif',
+                });
                 container.appendChild(span);
             }
         }
@@ -434,13 +469,13 @@ export class PDFViewerComponent {
     getSelectedText(): string {
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed) return '';
-        
+
         // Check if selection is within our container
         const anchorNode = selection.anchorNode;
         if (anchorNode && this.container.contains(anchorNode)) {
             return selection.toString().trim();
         }
-        
+
         return '';
     }
 
