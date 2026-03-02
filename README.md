@@ -12,7 +12,7 @@ Desktop only.
 - Select text and create comments anchored to that position
 - Comments pane sits alongside the PDF with scroll sync
 - Each comment is a markdown note — edit it, link to it, find it in search
-- `[[wikilink]]` autocomplete in the comment editor
+- backlinks autocomplete in the comment editor
 - Highlighted text regions rendered on the PDF pages
 - Right-click context menu: copy text, create comment, copy to active note
 
@@ -42,3 +42,4 @@ npm run build   # production build
 ```
 
 Requires Node 16+.
+
