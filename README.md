@@ -1,6 +1,6 @@
 # PDF Commenter
 
-An Obsidian plugin for reading and annotating PDFs. Select text, leave comments, and link them to other notes in your vault with `[[wikilinks]]`.
+An Obsidian plugin for reading and annotating PDFs. Select text, leave comments, and link them to other notes in your vault with backlinks.
 
 Comments are stored as individual markdown notes with frontmatter, not embedded in the PDF. Everything stays in your vault as plain files.
 
@@ -12,7 +12,7 @@ Desktop only.
 - Select text and create comments anchored to that position
 - Comments pane sits alongside the PDF with scroll sync
 - Each comment is a markdown note — edit it, link to it, find it in search
-- `[[wikilink]]` autocomplete in the comment editor
+- backlinks autocomplete in the comment editor
 - Highlighted text regions rendered on the PDF pages
 - Right-click context menu: copy text, create comment, copy to active note
 
