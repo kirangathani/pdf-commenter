@@ -9,7 +9,7 @@ class PdfFileSuggestModal extends FuzzySuggestModal<TFile> {
 		return item.path;
 	}
 	onChooseItem(item: TFile): void {
-		this.app.workspace.getLeaf(false).openFile(item);
+		void this.app.workspace.getLeaf(false).openFile(item);
 	}
 }
 
