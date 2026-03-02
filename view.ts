@@ -132,7 +132,7 @@ export class PdfCommenterView extends FileView {
     }
 
     getDisplayText(): string {
-        return this.file?.basename ?? 'PDF Viewer';
+        return this.file?.basename ?? 'PDF viewer';
     }
 
     canAcceptExtension(extension: string): boolean {
@@ -201,7 +201,7 @@ export class PdfCommenterView extends FileView {
             this.controlsSection = container.createEl('div', { cls: 'controls-section' });
 
             // Header
-            this.controlsSection.createEl('h2', { text: 'PDF Viewer' });
+            this.controlsSection.createEl('h2', { text: 'PDF viewer' });
 
             // Zoom controls
             const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
@@ -724,9 +724,10 @@ export class PdfCommenterView extends FileView {
                             }
                         } else if (this.file) {
                             // Last resort: create note now
+                            const currentFile = this.file;
                             const p = (async () => {
                                 if (!this.currentPdfCommentsFolder) {
-                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.file!.path);
+                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
                                 }
                                 const note = await this.createCommentNote(a);
                                 a.notePath = note.path;
@@ -929,7 +930,7 @@ export class PdfCommenterView extends FileView {
 
         const frontmatter =
             `---\n` +
-            `pdfPath: "${this.file!.path.replace(/"/g, '\\"')}"\n` +
+            `pdfPath: "${this.file.path.replace(/"/g, '\\"')}"\n` +
             `annotationId: "${ann.id}"\n` +
             `pageNumber: ${ann.anchor.pageNumber}\n` +
             `yNorm: ${ann.anchor.yNorm}\n` +
@@ -971,7 +972,7 @@ export class PdfCommenterView extends FileView {
                 evt.stopPropagation();
                 try {
                     // Use Obsidian link opener so it behaves like a normal wikilink click
-                    this.app.workspace.openLinkText(href, container.dataset.mgSource ?? '', true);
+                    void this.app.workspace.openLinkText(href, container.dataset.mgSource ?? '', true);
                 } catch (e) {
                     console.warn('[comment-preview] failed to open link:', href, e);
                 }
@@ -1161,9 +1162,10 @@ export class PdfCommenterView extends FileView {
 
         // Kick off note creation in the background so the UI is responsive immediately
         if (this.file) {
+            const currentFile = this.file;
             const createPromise = (async () => {
                 if (!this.currentPdfCommentsFolder) {
-                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.file!.path);
+                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
                 }
                 const note = await this.createCommentNote(ann);
                 ann.notePath = note.path;
