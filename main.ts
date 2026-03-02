@@ -1,4 +1,4 @@
-import { Plugin, FuzzySuggestModal, TFile } from "obsidian";
+import { Plugin, PluginManifest, FuzzySuggestModal, TFile } from "obsidian";
 import { VIEW_TYPE_PDF_COMMENTER, PdfCommenterView } from './view';
 
 class PdfFileSuggestModal extends FuzzySuggestModal<TFile> {
@@ -14,17 +14,17 @@ class PdfFileSuggestModal extends FuzzySuggestModal<TFile> {
 }
 
 export default class PdfCommenterPlugin extends Plugin {
-	async onload() {
+	onload(): void {
 		// Register the custom view
 		this.registerView(
 			VIEW_TYPE_PDF_COMMENTER,
 			// NOTE: Obsidian's runtime manifest includes `dir` (folder name under .obsidian/plugins).
 			// This can differ from `id` during development if the folder name doesn't match.
-			(leaf) => new PdfCommenterView(leaf, { pluginId: this.manifest.id, pluginDir: (this.manifest as any).dir ?? this.manifest.id })
+			(leaf) => new PdfCommenterView(leaf, { pluginId: this.manifest.id, pluginDir: (this.manifest as PluginManifest & { dir?: string }).dir ?? this.manifest.id })
 		);
 
 		// Claim .pdf extension from built-in viewer
-		// @ts-expect-error — undocumented internal API
+		// @ts-expect-error viewRegistry is an undocumented internal API
 		this.app.viewRegistry.unregisterExtensions(['pdf']);
 		this.registerExtensions(['pdf'], VIEW_TYPE_PDF_COMMENTER);
 
@@ -43,12 +43,11 @@ export default class PdfCommenterPlugin extends Plugin {
 		});
 	}
 
-	async onunload() {
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF_COMMENTER);
+	onunload(): void {
 		// Restore built-in PDF viewer
-		// @ts-expect-error
+		// @ts-expect-error viewRegistry is an undocumented internal API
 		this.app.viewRegistry.unregisterExtensions(['pdf']);
-		// @ts-expect-error
+		// @ts-expect-error viewRegistry is an undocumented internal API
 		this.app.viewRegistry.registerExtensions(['pdf'], 'pdf');
 	}
 }
