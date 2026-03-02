@@ -958,7 +958,7 @@ export class PdfCommenterView extends FileView {
                 const target = evt.target as HTMLElement | null;
                 if (!target) return;
 
-                const linkEl = target.closest?.('.internal-link') as HTMLElement | null;
+                const linkEl = target.closest('.internal-link');
                 if (!linkEl) return;
 
                 const href =
