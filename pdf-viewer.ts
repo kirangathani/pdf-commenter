@@ -67,7 +67,7 @@ export interface IPDFViewer {
     destroy(): void;
 }
 
-const pdfjsLib: PDFJsLibrary = pdfjsLibModule as unknown as PDFJsLibrary;
+const pdfjsLib = pdfjsLibModule as PDFJsLibrary;
 
 /**
  * Custom PDF Viewer using PDF.js
