@@ -1,7 +1,7 @@
 {
 	"id": "pdf-commenter",
 	"name": "PDF Commenter",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "A PDF viewer with an annotation system backed by markdown notes. Select text, create comments with backlinks, and keep everything inside your vault.",
 	"author": "kirangathani",

@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-pdf-commenter",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "A PDF viewer with an annotation system backed by markdown notes.",
 	"main": "main.js",
 	"scripts": {
