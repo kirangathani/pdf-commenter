@@ -4,6 +4,7 @@ import { ContextMenuAction } from './context-menu';
 import type { IPDFViewer } from './pdf-viewer';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import inlinedWorkerCode from 'virtual:pdf-worker';
 
 export const VIEW_TYPE_PDF_COMMENTER = 'pdf-commenter-view';
 
@@ -539,6 +540,17 @@ export class PdfCommenterView extends FileView {
     }
 
     private resolveWorkerSrc(): string | undefined {
+        // Prefer the build-time inlined worker (works with BRAT and any install method).
+        if (inlinedWorkerCode) {
+            try {
+                const blob = new Blob([inlinedWorkerCode], { type: 'text/javascript' });
+                return URL.createObjectURL(blob);
+            } catch (e) {
+                console.warn('[pdf-worker] failed to create blob from inlined worker:', e);
+            }
+        }
+
+        // Fallback: read worker file from disk (works for direct installs / dev mode).
         const adapter = this.app.vault.adapter;
         if (!(adapter instanceof FileSystemAdapter)) return undefined;
         const basePath = adapter.getBasePath();

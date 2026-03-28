@@ -41,6 +41,31 @@ const copyPdfWorker = {
 	}
 };
 
+// Inline the PDF.js worker code as a virtual module so the plugin is self-contained.
+// This is critical for BRAT installs where only main.js/manifest.json/styles.css are downloaded.
+const inlinePdfWorker = {
+	name: 'inline-pdf-worker',
+	setup(build) {
+		build.onResolve({ filter: /^virtual:pdf-worker$/ }, () => ({
+			path: 'pdf-worker',
+			namespace: 'inline-worker',
+		}));
+		build.onLoad({ filter: /.*/, namespace: 'inline-worker' }, () => {
+			const candidates = [
+				path.resolve('node_modules', 'pdfjs-dist', 'build', 'pdf.worker.min.js'),
+				path.resolve('node_modules', 'pdfjs-dist', 'build', 'pdf.worker.js'),
+			];
+			const src = candidates.find(p => fs.existsSync(p));
+			if (!src) throw new Error('[inline-pdf-worker] Could not find pdf.worker(.min).js');
+			const code = fs.readFileSync(src, 'utf8');
+			return {
+				contents: `export default ${JSON.stringify(code)};`,
+				loader: 'js',
+			};
+		});
+	}
+};
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -69,7 +94,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "main.js",
 	minify: prod,
-	plugins: [copyPdfWorker],
+	plugins: [copyPdfWorker, inlinePdfWorker],
 });
 
 if (prod) {
