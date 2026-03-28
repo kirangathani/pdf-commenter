@@ -235,9 +235,15 @@
 .pdf-scroll-container {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     padding: 10px;
+}
+
+/* Centre pages when narrower than viewport; left-align when wider so the
+   horizontal scrollbar can reach the full width (no negative overflow). */
+.pdf-scroll-container > .pdf-page-container {
+    margin: 0 auto;
 }
 
 /* Individual page container */
