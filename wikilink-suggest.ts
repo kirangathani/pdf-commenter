@@ -1,12 +1,19 @@
 import { App, TFile, prepareFuzzySearch } from 'obsidian';
 
+type LinkTarget = {
+	file: TFile;
+	matchText: string; // the string we fuzzy-match against (basename, alias, or path)
+	displayText: string; // what to show in the dropdown
+	isAlias: boolean;
+};
+
 export class WikilinkSuggest {
 	private app: App;
 	private textarea: HTMLTextAreaElement;
 	private popup: HTMLDivElement;
-	private items: TFile[] = [];
+	private items: LinkTarget[] = [];
 	private activeIndex = 0;
-	private limit = 8;
+	private limit = 12;
 
 	private inputHandler: () => void;
 	private keydownHandler: (e: KeyboardEvent) => void;
@@ -41,16 +48,98 @@ export class WikilinkSuggest {
 		return { start: open, query: text.slice(open + 2) };
 	}
 
-	private getSuggestions(query: string): TFile[] {
+	private buildLinkTargets(): LinkTarget[] {
 		const files = this.app.vault.getMarkdownFiles();
-		if (!query) return files.slice(0, this.limit);
+		const targets: LinkTarget[] = [];
+
+		for (const file of files) {
+			// Primary target: basename
+			targets.push({
+				file,
+				matchText: file.basename,
+				displayText: file.basename,
+				isAlias: false,
+			});
+
+			// Also match against full path (without extension) for disambiguation
+			if (file.parent && file.parent.path !== '/') {
+				targets.push({
+					file,
+					matchText: file.path.replace(/\.md$/, ''),
+					displayText: file.path.replace(/\.md$/, ''),
+					isAlias: false,
+				});
+			}
+
+			// Aliases from frontmatter via metadataCache
+			const cache = this.app.metadataCache.getFileCache(file);
+			const aliases = cache?.frontmatter?.aliases;
+			if (Array.isArray(aliases)) {
+				for (const alias of aliases) {
+					if (typeof alias === 'string' && alias.trim()) {
+						targets.push({
+							file,
+							matchText: alias.trim(),
+							displayText: alias.trim(),
+							isAlias: true,
+						});
+					}
+				}
+			} else if (typeof aliases === 'string' && aliases.trim()) {
+				// Handle single alias as string
+				targets.push({
+					file,
+					matchText: aliases.trim(),
+					displayText: aliases.trim(),
+					isAlias: true,
+				});
+			}
+		}
+
+		return targets;
+	}
+
+	private getSuggestions(query: string): LinkTarget[] {
+		const targets = this.buildLinkTargets();
+
+		if (!query) {
+			// Deduplicate by file (prefer basename entry)
+			const seen = new Set<string>();
+			const results: LinkTarget[] = [];
+			for (const t of targets) {
+				if (t.isAlias) continue;
+				if (t.file.parent && t.file.parent.path !== '/' && t.matchText.includes('/')) continue;
+				if (seen.has(t.file.path)) continue;
+				seen.add(t.file.path);
+				results.push(t);
+				if (results.length >= this.limit) break;
+			}
+			return results;
+		}
+
 		const search = prepareFuzzySearch(query);
-		return files
-			.map(f => ({ file: f, result: search(f.basename) }))
-			.filter(x => x.result !== null)
-			.sort((a, b) => b.result!.score - a.result!.score)
-			.slice(0, this.limit)
-			.map(x => x.file);
+		const scored: { target: LinkTarget; score: number }[] = [];
+
+		for (const t of targets) {
+			const result = search(t.matchText);
+			if (result !== null) {
+				scored.push({ target: t, score: result.score });
+			}
+		}
+
+		// Sort by score descending, then deduplicate by file+displayText
+		scored.sort((a, b) => b.score - a.score);
+		const seen = new Set<string>();
+		const results: LinkTarget[] = [];
+		for (const s of scored) {
+			const key = `${s.target.file.path}::${s.target.displayText}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			results.push(s.target);
+			if (results.length >= this.limit) break;
+		}
+
+		return results;
 	}
 
 	private onInput(): void {
@@ -97,14 +186,17 @@ export class WikilinkSuggest {
 		}
 	}
 
-	private accept(file: TFile): void {
+	private accept(target: LinkTarget): void {
 		const trigger = this.getTrigger();
 		if (!trigger) return;
 		const before = this.textarea.value.slice(0, trigger.start);
 		const after = this.textarea.value.slice(this.textarea.selectionStart);
-		const link = `[[${file.basename}]]`;
-		this.textarea.value = before + link + after;
-		const cursorPos = before.length + link.length;
+		// Use alias pipe syntax if the match was via an alias
+		const linkText = target.isAlias
+			? `[[${target.file.basename}|${target.displayText}]]`
+			: `[[${target.displayText}]]`;
+		this.textarea.value = before + linkText + after;
+		const cursorPos = before.length + linkText.length;
 		this.textarea.setSelectionRange(cursorPos, cursorPos);
 		this.textarea.dispatchEvent(new Event('input', { bubbles: true }));
 		this.hide();
@@ -113,17 +205,20 @@ export class WikilinkSuggest {
 	private renderItems(): void {
 		this.popup.empty();
 		for (let i = 0; i < this.items.length; i++) {
-			const file = this.items[i];
+			const target = this.items[i];
 			const el = this.popup.createEl('div', { cls: 'mg-suggest-item' });
-			el.createSpan({ text: file.basename });
-			const folder = file.parent?.path;
-			if (folder && folder !== '/') {
-				el.createSpan({ cls: 'mg-suggest-path', text: folder });
+			el.createSpan({ text: target.displayText });
+			// Show folder path for context, and alias indicator
+			const folder = target.file.parent?.path;
+			const suffix = target.isAlias ? ` (alias for ${target.file.basename})` : '';
+			const pathText = (folder && folder !== '/' ? folder : '') + suffix;
+			if (pathText) {
+				el.createSpan({ cls: 'mg-suggest-path', text: pathText });
 			}
 			if (i === this.activeIndex) el.addClass('is-active');
 			el.addEventListener('mousedown', (e) => {
 				e.preventDefault(); // keep textarea focused
-				this.accept(file);
+				this.accept(target);
 			});
 			el.addEventListener('mouseover', () => {
 				this.activeIndex = i;

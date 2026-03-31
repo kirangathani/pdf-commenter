@@ -115,12 +115,27 @@ export class PdfCommenterView extends FileView {
     private pinchWheelHandler: ((e: WheelEvent) => void) | null = null;
     private activeWikilinkSuggest: WikilinkSuggest | null = null;
 
+    // Undo stack for deferred comment deletion
+    private deleteUndoStack: { annotation: PdfAnnotation; index: number; timer: ReturnType<typeof setTimeout> }[] = [];
+    private undoKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+    private activeToast: HTMLElement | null = null;
+
     // Promoted from onOpen locals so onLoadFile can access them
+    private titleEl: HTMLHeadingElement;
     private zoomLabel: HTMLSpanElement;
     private zoomOutBtn: HTMLButtonElement;
     private zoomInBtn: HTMLButtonElement;
     private isLoadingPdf = false;
     private isZooming = false;
+    private renderGeneration = 0;
+
+    // Search state
+    private searchBar: HTMLElement | null = null;
+    private searchInput: HTMLInputElement | null = null;
+    private searchMatchLabel: HTMLSpanElement | null = null;
+    private searchMatches: { source: 'pdf' | 'comment'; pageNumber: number }[] = [];
+    private searchCurrentIdx = -1;
+    private searchHighlightEls: HTMLElement[] = [];
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -193,6 +208,7 @@ export class PdfCommenterView extends FileView {
 
     async onOpen(): Promise<void> {
         await super.onOpen();
+
         try {
             const container = this.contentEl;
             container.empty();
@@ -202,7 +218,7 @@ export class PdfCommenterView extends FileView {
             this.controlsSection = container.createEl('div', { cls: 'controls-section' });
 
             // Header
-            this.controlsSection.createEl('h2', { text: 'PDF viewer' });
+            this.titleEl = this.controlsSection.createEl('h2', { text: 'PDF viewer' });
 
             // Zoom controls
             const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
@@ -219,6 +235,9 @@ export class PdfCommenterView extends FileView {
 
             // Create PDF container (left)
             this.pdfContainer = this.viewerRow.createEl('div', { cls: 'pdf-viewer-container' });
+
+            // Search bar overlaid on pdfContainer (hidden by default; recreated after each PDF load)
+            this.createSearchBar();
 
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
@@ -306,7 +325,7 @@ export class PdfCommenterView extends FileView {
                             this.isZooming = false;
                             this.updateZoomButtonsState();
                             this.updateCommentsTrackHeight();
-                            this.renderCommentMarkers();
+                            void this.renderCommentMarkers();
                             this.renderHighlights();
                             pinchTargetScale = null;
                         }
@@ -384,12 +403,12 @@ export class PdfCommenterView extends FileView {
                     const deselectId = this.selectedAnnotationId;
                     if (deselectId && this.activeInlineTextarea && !this.activeInlineTextarea.value.trim()) {
                         this.selectedAnnotationId = null;
-                        void this.deleteEmptyAnnotation(deselectId);
+                        void this.deleteAnnotation(deselectId);
                         return;
                     }
 
                     this.selectedAnnotationId = null;
-                    this.renderCommentMarkers();
+                    void this.renderCommentMarkers();
                 };
             }
             // Capture phase so it triggers even if inner elements stop propagation.
@@ -400,6 +419,28 @@ export class PdfCommenterView extends FileView {
             // but only when our inline comment textarea is focused.
             if (!this.inlineKeyHandler) {
                 this.inlineKeyHandler = (e: KeyboardEvent) => {
+                    // Ctrl+F: open search bar
+                    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+                        if (this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            e.stopPropagation();
+                            this.openSearchBar();
+                            return;
+                        }
+                    }
+
+                    // Escape: close search bar if open
+                    if (e.key === 'Escape' && this.searchBar && !this.searchBar.hasClass('is-hidden')) {
+                        if (this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            e.stopPropagation();
+                            this.closeSearchBar();
+                            return;
+                        }
+                    }
+
                     // Comment shortcut: Ctrl+Alt+M (only when this view is active)
                     const isCommentHotkey =
                         e.ctrlKey &&
@@ -416,6 +457,40 @@ export class PdfCommenterView extends FileView {
                         e.stopPropagation();
                         void this.handleCommentAction(text, { focusEditor: true });
                         return;
+                    }
+
+                    // Delete comment shortcut: Alt+Backspace when a comment is selected
+                    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'Backspace' || e.code === 'Backspace')) {
+                        if (this.selectedAnnotationId && this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            e.stopPropagation();
+                            void this.deleteAnnotation(this.selectedAnnotationId);
+                            return;
+                        }
+                    }
+
+                    // Cycle comments: Alt+D (next) / Alt+Shift+D (prev)
+                    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'd' || e.key === 'D')) {
+                        if (this.annotations.length > 0 && this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            e.stopPropagation();
+                            this.cycleComment(e.shiftKey ? -1 : 1);
+                            return;
+                        }
+                    }
+
+                    // Undo deletion: Ctrl/Cmd+Z when no textarea is focused
+                    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.code === 'KeyZ')) {
+                        const isTextareaFocused = this.activeInlineTextarea && document.activeElement === this.activeInlineTextarea;
+                        if (!isTextareaFocused && this.deleteUndoStack.length > 0 && this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
+                            e.preventDefault();
+                            e.stopImmediatePropagation();
+                            e.stopPropagation();
+                            this.undoLastDeletion();
+                            return;
+                        }
                     }
 
                     if (!this.activeInlineTextarea || document.activeElement !== this.activeInlineTextarea) return;
@@ -446,7 +521,10 @@ export class PdfCommenterView extends FileView {
                     this.isSyncingScroll = false;
                 }
             };
-            this.pdfContainer.addEventListener('scroll', () => syncScroll('pdf'), { passive: true });
+            this.pdfContainer.addEventListener('scroll', () => {
+                syncScroll('pdf');
+                this.updateSearchBarPosition();
+            }, { passive: true });
             this.commentsPane.addEventListener('scroll', () => syncScroll('comments'), { passive: true });
 
             // Zoom handlers
@@ -463,7 +541,7 @@ export class PdfCommenterView extends FileView {
                             this.isZooming = false;
                             this.updateZoomButtonsState();
                             this.updateCommentsTrackHeight();
-                            this.renderCommentMarkers();
+                            void this.renderCommentMarkers();
                             this.renderHighlights();
                         }
                     }
@@ -483,7 +561,7 @@ export class PdfCommenterView extends FileView {
                             this.isZooming = false;
                             this.updateZoomButtonsState();
                             this.updateCommentsTrackHeight();
-                            this.renderCommentMarkers();
+                            void this.renderCommentMarkers();
                             this.renderHighlights();
                         }
                     }
@@ -537,6 +615,13 @@ export class PdfCommenterView extends FileView {
             this.activeWikilinkSuggest.destroy();
             this.activeWikilinkSuggest = null;
         }
+        // Commit any pending deletions immediately on close
+        for (const entry of this.deleteUndoStack) {
+            clearTimeout(entry.timer);
+            void this.commitDeletion(entry.annotation.id);
+        }
+        this.deleteUndoStack = [];
+        this.dismissDeleteToast();
     }
 
     private resolveWorkerSrc(): string | undefined {
@@ -564,11 +649,14 @@ export class PdfCommenterView extends FileView {
     }
 
     async onLoadFile(file: TFile): Promise<void> {
+        // Update header to show the PDF name
+        this.titleEl.textContent = file.basename;
+
         // Reset state
         this.currentPdfCommentsFolder = null;
         this.annotations = [];
         this.selectedAnnotationId = null;
-        this.renderCommentMarkers();
+        void this.renderCommentMarkers();
         this.renderHighlights();
 
         this.isLoadingPdf = true;
@@ -595,9 +683,11 @@ export class PdfCommenterView extends FileView {
             );
 
             await this.pdfViewer.loadPdf(pdfData);
+            // Recreate search bar (loadPdf empties pdfContainer, destroying the previous one)
+            this.createSearchBar();
             await this.loadAnnotationsForCurrentPdf();
             this.updateCommentsTrackHeight();
-            this.renderCommentMarkers();
+            void this.renderCommentMarkers();
             this.renderHighlights();
 
             this.zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
@@ -613,7 +703,7 @@ export class PdfCommenterView extends FileView {
             this.isLoadingPdf = false;
             this.updateZoomButtonsState();
             this.updateCommentsTrackHeight();
-            this.renderCommentMarkers();
+            void this.renderCommentMarkers();
         }
     }
 
@@ -639,83 +729,336 @@ export class PdfCommenterView extends FileView {
         if (this.commentsTrack) this.commentsTrack.empty();
     }
 
+    private cycleComment(direction: 1 | -1): void {
+        if (this.annotations.length === 0) return;
+
+        // Sort annotations by visual position (same order as renderCommentMarkers)
+        const sorted = this.annotations
+            .map(a => {
+                const pageEl = this.pdfContainer?.querySelector<HTMLElement>(
+                    `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
+                );
+                const top = pageEl ? pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight) : 0;
+                return { annotation: a, top };
+            })
+            .sort((a, b) => a.top - b.top);
+
+        const currentIdx = sorted.findIndex(s => s.annotation.id === this.selectedAnnotationId);
+        let nextIdx: number;
+        if (currentIdx === -1) {
+            // Nothing selected — start at first (forward) or last (backward)
+            nextIdx = direction === 1 ? 0 : sorted.length - 1;
+        } else {
+            nextIdx = (currentIdx + direction + sorted.length) % sorted.length;
+        }
+
+        const target = sorted[nextIdx].annotation;
+        this.selectedAnnotationId = target.id;
+        this.pendingFocusAnnotationId = target.id;
+        void this.renderCommentMarkers();
+
+        // Scroll the PDF so the target annotation's page position is visible
+        const pageEl = this.pdfContainer?.querySelector<HTMLElement>(
+            `.pdf-page-container[data-page-number="${target.anchor.pageNumber}"]`
+        );
+        if (pageEl) {
+            const targetScrollTop = pageEl.offsetTop + (target.anchor.yNorm * pageEl.offsetHeight) - this.pdfContainer.clientHeight / 3;
+            this.pdfContainer.scrollTop = Math.max(0, targetScrollTop);
+        }
+    }
+
+    private createSearchBar(): void {
+        if (!this.pdfContainer) return;
+        this.searchBar = document.createElement('div');
+        this.searchBar.className = 'pdf-search-bar is-hidden';
+        this.pdfContainer.prepend(this.searchBar);
+        this.searchInput = this.searchBar.createEl('input', {
+            cls: 'pdf-search-input',
+            attr: { type: 'text', placeholder: 'Find in PDF…' },
+        });
+        this.searchMatchLabel = this.searchBar.createEl('span', { cls: 'pdf-search-match-label' });
+        const searchClose = this.searchBar.createEl('button', { cls: 'pdf-search-close-btn', text: '×' });
+
+        this.searchInput.addEventListener('input', () => this.performSearch());
+        this.searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) this.navigateSearch(-1); else this.navigateSearch(1);
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.closeSearchBar();
+            }
+        });
+        searchClose.addEventListener('click', () => this.closeSearchBar());
+    }
+
+    private updateSearchBarPosition(): void {
+        if (!this.searchBar || !this.pdfContainer || this.searchBar.hasClass('is-hidden')) return;
+        this.searchBar.setCssStyles({ top: `${this.pdfContainer.scrollTop + 8}px` });
+    }
+
+    private openSearchBar(): void {
+        if (!this.searchBar || !this.searchInput) return;
+        this.searchBar.removeClass('is-hidden');
+        this.updateSearchBarPosition();
+        this.searchInput.focus();
+        this.searchInput.select();
+    }
+
+    private closeSearchBar(): void {
+        if (!this.searchBar) return;
+        this.searchBar.addClass('is-hidden');
+        this.clearSearchHighlights();
+        if (this.searchInput) this.searchInput.value = '';
+        if (this.searchMatchLabel) this.searchMatchLabel.textContent = '';
+        this.searchMatches = [];
+        this.searchCurrentIdx = -1;
+    }
+
+    private clearSearchHighlights(): void {
+        for (const el of this.searchHighlightEls) el.remove();
+        this.searchHighlightEls = [];
+    }
+
+    private performSearch(): void {
+        this.clearSearchHighlights();
+        this.searchMatches = [];
+        this.searchCurrentIdx = -1;
+
+        const query = this.searchInput?.value.trim().toLowerCase();
+        if (!query) {
+            if (this.searchMatchLabel) this.searchMatchLabel.textContent = '';
+            return;
+        }
+
+        // Walk all text layer spans in the PDF container
+        const pageContainers = this.pdfContainer.querySelectorAll<HTMLElement>('.pdf-page-container');
+        for (const pageEl of Array.from(pageContainers)) {
+            const pageNum = parseInt(pageEl.dataset.pageNumber ?? '0', 10);
+            const spans = pageEl.querySelectorAll<HTMLElement>('.pdf-text-layer span, .textLayer span');
+            for (const span of Array.from(spans)) {
+                const text = span.textContent ?? '';
+                const lower = text.toLowerCase();
+                let startIdx = 0;
+                while (true) {
+                    const idx = lower.indexOf(query, startIdx);
+                    if (idx === -1) break;
+                    // Create a highlight overlay positioned over this span region
+                    const highlightLayer = pageEl.querySelector('.pdf-highlight-layer') ?? pageEl;
+                    const spanRect = span.getBoundingClientRect();
+                    const parentRect = pageEl.getBoundingClientRect();
+
+                    // Approximate character-level positioning
+                    const charWidth = spanRect.width / (text.length || 1);
+                    const left = spanRect.left - parentRect.left + idx * charWidth;
+                    const width = charWidth * query.length;
+
+                    const mark = document.createElement('div');
+                    mark.className = 'pdf-search-highlight';
+                    mark.setCssStyles({
+                        position: 'absolute',
+                        left: `${left}px`,
+                        top: `${spanRect.top - parentRect.top}px`,
+                        width: `${width}px`,
+                        height: `${spanRect.height}px`,
+                    });
+                    highlightLayer.appendChild(mark);
+                    this.searchHighlightEls.push(mark);
+
+                    this.searchMatches.push({ source: 'pdf', pageNumber: pageNum });
+
+                    startIdx = idx + 1;
+                }
+            }
+        }
+
+        // Walk comment previews in the comments pane
+        const previews = this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-preview');
+        for (const preview of Array.from(previews)) {
+            const marker = preview.closest('.pdf-comment-marker') as HTMLElement | null;
+            if (!marker) continue;
+            // Use a TreeWalker to find text nodes inside rendered markdown
+            const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+            let textNode: Text | null;
+            while ((textNode = walker.nextNode() as Text | null)) {
+                const text = textNode.textContent ?? '';
+                const lower = text.toLowerCase();
+                let startIdx = 0;
+                while (true) {
+                    const idx = lower.indexOf(query, startIdx);
+                    if (idx === -1) break;
+
+                    // Create a highlight using a Range for accurate positioning
+                    const range = document.createRange();
+                    range.setStart(textNode, idx);
+                    range.setEnd(textNode, idx + query.length);
+                    const rects = range.getClientRects();
+                    const markerRect = marker.getBoundingClientRect();
+
+                    for (const rect of Array.from(rects)) {
+                        const mark = document.createElement('div');
+                        mark.className = 'pdf-search-highlight';
+                        mark.setCssStyles({
+                            position: 'absolute',
+                            left: `${rect.left - markerRect.left}px`,
+                            top: `${rect.top - markerRect.top}px`,
+                            width: `${rect.width}px`,
+                            height: `${rect.height}px`,
+                        });
+                        marker.appendChild(mark);
+                        this.searchHighlightEls.push(mark);
+                        this.searchMatches.push({ source: 'comment', pageNumber: 0 });
+                    }
+
+                    startIdx = idx + 1;
+                }
+            }
+        }
+
+        if (this.searchMatches.length > 0) {
+            this.searchCurrentIdx = 0;
+            this.highlightCurrentMatch();
+        }
+        this.updateSearchLabel();
+    }
+
+    private navigateSearch(direction: 1 | -1): void {
+        if (this.searchMatches.length === 0) return;
+        // Remove active class from current
+        if (this.searchCurrentIdx >= 0 && this.searchCurrentIdx < this.searchHighlightEls.length) {
+            this.searchHighlightEls[this.searchCurrentIdx].removeClass('is-active');
+        }
+        this.searchCurrentIdx = (this.searchCurrentIdx + direction + this.searchMatches.length) % this.searchMatches.length;
+        this.highlightCurrentMatch();
+        this.updateSearchLabel();
+    }
+
+    private highlightCurrentMatch(): void {
+        if (this.searchCurrentIdx < 0 || this.searchCurrentIdx >= this.searchHighlightEls.length) return;
+        const el = this.searchHighlightEls[this.searchCurrentIdx];
+        el.addClass('is-active');
+
+        const match = this.searchMatches[this.searchCurrentIdx];
+        if (match.source === 'comment') {
+            // Scroll the comments pane to show the match
+            const marker = el.closest('.pdf-comment-marker') as HTMLElement | null;
+            if (marker) {
+                const targetTop = marker.offsetTop - this.commentsPane.clientHeight / 3;
+                this.commentsPane.scrollTop = Math.max(0, targetTop);
+            }
+        } else {
+            // Scroll the PDF container to show the match
+            const pageEl = el.closest('.pdf-page-container') as HTMLElement | null;
+            if (pageEl) {
+                const targetTop = pageEl.offsetTop + el.offsetTop - this.pdfContainer.clientHeight / 3;
+                this.pdfContainer.scrollTop = Math.max(0, targetTop);
+            }
+        }
+    }
+
+    private updateSearchLabel(): void {
+        if (!this.searchMatchLabel) return;
+        if (this.searchMatches.length === 0) {
+            const hasQuery = !!(this.searchInput?.value.trim());
+            this.searchMatchLabel.textContent = hasQuery ? 'No results' : '';
+        } else {
+            this.searchMatchLabel.textContent = `${this.searchCurrentIdx + 1} of ${this.searchMatches.length}`;
+        }
+    }
+
     private updateCommentsTrackHeight(): void {
         if (!this.commentsTrack || !this.pdfContainer) return;
         // Keep the comments track the same scrollable height as the PDF container content
         this.commentsTrack.setCssStyles({ height: `${this.pdfContainer.scrollHeight}px` });
     }
 
-    private renderCommentMarkers(): void {
+    private async renderCommentMarkers(): Promise<void> {
         if (!this.commentsTrack || !this.pdfContainer) return;
+        const gen = ++this.renderGeneration;
         this.commentsTrack.empty();
 
-        // Layout constants — MARKER_HEIGHT must match .pdf-comment-marker height in styles.css
-        const MARKER_HEIGHT = 240;
         const MARKER_GAP = 10;
 
         // Phase 1: Compute ideal top positions
-        const items: { annotation: typeof this.annotations[0]; idealTop: number }[] = [];
+        const items: { annotation: typeof this.annotations[0]; idealTop: number; markerEl: HTMLElement }[] = [];
         for (const a of this.annotations) {
             const pageEl = this.pdfContainer.querySelector<HTMLElement>(
                 `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
             );
             if (!pageEl) continue;
-            items.push({ annotation: a, idealTop: pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight) });
+            items.push({ annotation: a, idealTop: pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight), markerEl: null! });
         }
 
         // Phase 2: Sort by ideal position
         items.sort((a, b) => a.idealTop - b.idealTop);
 
-        // Phase 3: Greedy push-down layout
-        let nextAvailableTop = 0;
+        // Phase 3: Create DOM elements without positioning
+        this.commentsTrack.setCssStyles({ visibility: 'hidden' });
+        const renderPromises: Promise<void>[] = [];
+        let pendingFocusTextarea: HTMLTextAreaElement | null = null;
+
         for (const item of items) {
             const a = item.annotation;
-            const placedTop = Math.max(item.idealTop, nextAvailableTop);
-            nextAvailableTop = placedTop + MARKER_HEIGHT + MARKER_GAP;
+            const isSelected = a.id === this.selectedAnnotationId;
 
             const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
-            marker.setCssStyles({ top: `${placedTop}px` });
+            if (!isSelected) marker.addClass('is-collapsed');
+            item.markerEl = marker;
 
             marker.dataset.annotationId = a.id;
-            marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
+            marker.toggleClass('is-selected', isSelected);
             marker.addEventListener('click', () => {
                 this.selectedAnnotationId = a.id;
-                this.renderCommentMarkers();
+                void this.renderCommentMarkers();
             });
 
-            // While editing (selected), hide the preview entirely.
-            // Preview only shows when not editing (after save/deselect).
-            if (a.id === this.selectedAnnotationId) {
+            // Delete button (top-right X)
+            const deleteBtn = marker.createEl('button', { cls: 'pdf-comment-delete-btn', text: '\u00d7' });
+            deleteBtn.setAttribute('aria-label', 'Delete comment');
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                void this.deleteAnnotation(a.id);
+            });
+
+            if (isSelected) {
                 const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
                 const textarea = editor.createEl('textarea', {
                     cls: 'pdf-comment-inline-textarea',
-                    attr: { rows: '3', maxlength: '280', placeholder: 'Write a comment… (supports [[wikilinks]])' },
+                    attr: { rows: '3', placeholder: 'Write a comment… (supports [[backlinks]])' },
                 });
                 const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
                 const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
                 saveBtn.disabled = true;
                 let isSaving = false;
 
+                const autoResize = () => {
+                    textarea.style.height = 'auto';
+                    textarea.style.height = `${textarea.scrollHeight}px`;
+                };
+
                 // Provide default frontmatter/quote so saving works even before notePath is ready.
                 textarea.dataset.fm = '';
                 textarea.dataset.quote = `> ${a.selectedText.replace(/\n/g, '\n> ')}\n\n`;
 
                 // Load the current comment body from the note (excluding frontmatter + quote block)
-                void (async () => {
+                const loadPromise = (async () => {
                     if (!a.notePath) return;
                     const af = this.app.vault.getAbstractFileByPath(a.notePath);
                     if (!(af instanceof TFile)) return;
                     const md = await this.app.vault.read(af);
                     const { frontmatter, body } = this.stripFrontmatter(md);
                     const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
-                    // stash these on the textarea dataset for save
                     textarea.dataset.fm = frontmatter;
                     textarea.dataset.quote = quoteBlock;
                     textarea.value = commentBody.trimStart();
+                    autoResize();
                 })();
+                renderPromises.push(loadPromise);
 
                 textarea.addEventListener('click', (e) => e.stopPropagation());
                 textarea.addEventListener('input', () => {
+                    autoResize();
                     saveBtn.disabled = false;
                     this.activeInlineDirty = true;
                 });
@@ -735,7 +1078,6 @@ export class PdfCommenterView extends FileView {
                                 return;
                             }
                         } else if (this.file) {
-                            // Last resort: create note now
                             const currentFile = this.file;
                             const p = (async () => {
                                 if (!this.currentPdfCommentsFolder) {
@@ -771,36 +1113,25 @@ export class PdfCommenterView extends FileView {
                         const quote = textarea.dataset.quote ?? '';
                         const next = `${fm}${quote}${textarea.value}\n`;
                         await this.app.vault.modify(af, next);
-                        // Deselect after save and refresh UI
                         this.activeInlineDirty = false;
                         this.selectedAnnotationId = null;
-                        this.renderCommentMarkers();
+                        void this.renderCommentMarkers();
                     } catch (err) {
                         console.warn('[comment-inline] failed to save:', err);
-                        // allow retry
                         saveBtn.disabled = false;
                     } finally {
                         isSaving = false;
                     }
                 };
 
-                // Register as the currently active inline editor for global shortcut handling
                 this.activeInlineTextarea = textarea;
                 this.activeInlineSave = doSave;
                 this.activeInlineDirty = false;
 
-                // Auto-focus the editor immediately when requested (e.g. newly created comment)
+                // Focus is deferred to after Phase 4 (visibility restore)
                 if (this.pendingFocusAnnotationId === a.id) {
                     this.pendingFocusAnnotationId = null;
-                    requestAnimationFrame(() => {
-                        try {
-                            textarea.focus();
-                            const len = textarea.value.length;
-                            textarea.setSelectionRange(len, len);
-                        } catch {
-                            // ignore
-                        }
-                    });
+                    pendingFocusTextarea = textarea;
                 }
 
                 saveBtn.addEventListener('click', (e) => {
@@ -808,18 +1139,45 @@ export class PdfCommenterView extends FileView {
                     void doSave();
                 });
 
-                // Wikilink autocomplete
                 if (this.activeWikilinkSuggest) this.activeWikilinkSuggest.destroy();
                 this.activeWikilinkSuggest = new WikilinkSuggest(this.app, textarea);
             } else {
                 const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
-                void this.renderNotePreviewInto(a, preview);
+                renderPromises.push(this.renderNotePreviewInto(a, preview));
             }
         }
 
-        // Extend track height if pushed-down markers exceed the PDF scroll height
+        // Phase 4: Wait for content to render, then measure and position
+        await Promise.all(renderPromises);
+        if (gen !== this.renderGeneration) return; // stale render, bail
+
+        let nextAvailableTop = 0;
+        for (const item of items) {
+            const marker = item.markerEl;
+            const measuredHeight = marker.offsetHeight;
+            const placedTop = Math.max(item.idealTop, nextAvailableTop);
+            marker.setCssStyles({ top: `${placedTop}px` });
+            nextAvailableTop = placedTop + measuredHeight + MARKER_GAP;
+        }
+
+        this.commentsTrack.setCssStyles({ visibility: 'visible' });
+
         if (nextAvailableTop > this.pdfContainer.scrollHeight) {
             this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
+        }
+
+        // Focus textarea after DOM is visible and positioned
+        if (pendingFocusTextarea) {
+            const ta = pendingFocusTextarea;
+            requestAnimationFrame(() => {
+                try {
+                    ta.focus();
+                    const len = ta.value.length;
+                    ta.setSelectionRange(len, len);
+                } catch {
+                    // ignore
+                }
+            });
         }
     }
 
@@ -1070,7 +1428,9 @@ export class PdfCommenterView extends FileView {
         }
     }
 
-    private async deleteEmptyAnnotation(annotationId: string): Promise<void> {
+    private static readonly DELETE_UNDO_TIMEOUT_MS = 30000;
+
+    private async deleteAnnotation(annotationId: string): Promise<void> {
         const idx = this.annotations.findIndex(a => a.id === annotationId);
         if (idx === -1) return;
         const ann = this.annotations[idx];
@@ -1081,20 +1441,91 @@ export class PdfCommenterView extends FileView {
             try { await pending; } catch { /* ignore */ }
         }
 
-        // Remove from array and persist
+        // Clear selection state if we're deleting the selected annotation
+        if (this.selectedAnnotationId === annotationId) {
+            this.selectedAnnotationId = null;
+            this.activeInlineTextarea = null;
+            this.activeInlineSave = null;
+            this.activeInlineDirty = false;
+        }
+
+        // Remove from UI immediately but defer persistence
         this.annotations.splice(idx, 1);
+        void this.renderCommentMarkers();
+        this.renderHighlights();
+
+        // Push onto undo stack with a deferred commit timer
+        const timer = setTimeout(() => {
+            this.commitDeletion(annotationId);
+        }, PdfCommenterView.DELETE_UNDO_TIMEOUT_MS);
+        this.deleteUndoStack.push({ annotation: ann, index: idx, timer });
+
+        this.showDeleteToast();
+    }
+
+    private async commitDeletion(annotationId: string): Promise<void> {
+        const stackIdx = this.deleteUndoStack.findIndex(e => e.annotation.id === annotationId);
+        if (stackIdx === -1) return;
+        const entry = this.deleteUndoStack[stackIdx];
+        this.deleteUndoStack.splice(stackIdx, 1);
+
+        // Persist sidecar (annotations array already has it removed)
         await this.saveAnnotationsForCurrentPdf();
 
         // Trash the backing note if it exists
-        if (ann.notePath) {
-            const noteFile = this.app.vault.getAbstractFileByPath(ann.notePath);
+        if (entry.annotation.notePath) {
+            const noteFile = this.app.vault.getAbstractFileByPath(entry.annotation.notePath);
             if (noteFile instanceof TFile) {
                 try { await this.app.fileManager.trashFile(noteFile); } catch { /* ignore */ }
             }
         }
 
-        this.renderCommentMarkers();
+        // Dismiss toast if no more pending deletions
+        if (this.deleteUndoStack.length === 0) {
+            this.dismissDeleteToast();
+        }
+    }
+
+    private undoLastDeletion(): void {
+        const entry = this.deleteUndoStack.pop();
+        if (!entry) return;
+
+        clearTimeout(entry.timer);
+
+        // Re-insert at original index (clamped to current length)
+        const insertIdx = Math.min(entry.index, this.annotations.length);
+        this.annotations.splice(insertIdx, 0, entry.annotation);
+
+        void this.renderCommentMarkers();
         this.renderHighlights();
+
+        // Dismiss toast if no more pending deletions
+        if (this.deleteUndoStack.length === 0) {
+            this.dismissDeleteToast();
+        }
+    }
+
+    private showDeleteToast(): void {
+        // Update existing toast rather than stacking
+        if (this.activeToast) {
+            this.dismissDeleteToast();
+        }
+
+        const toast = this.contentEl.createEl('div', { cls: 'pdf-comment-delete-toast' });
+        const msg = toast.createEl('span', { text: 'Comment deleted. You can undo a delete quickly with Ctrl+Z' });
+        const undoBtn = toast.createEl('button', { cls: 'pdf-comment-toast-undo', text: 'Undo' });
+        undoBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.undoLastDeletion();
+        });
+        this.activeToast = toast;
+    }
+
+    private dismissDeleteToast(): void {
+        if (this.activeToast) {
+            this.activeToast.remove();
+            this.activeToast = null;
+        }
     }
 
     private getSelectionHighlightRectsFromCurrentSelection(): PageRects[] {
@@ -1168,7 +1599,7 @@ export class PdfCommenterView extends FileView {
         if (opts?.focusEditor) this.pendingFocusAnnotationId = ann.id;
 
         this.updateCommentsTrackHeight();
-        this.renderCommentMarkers();
+        void this.renderCommentMarkers();
         this.renderHighlights();
         await this.saveAnnotationsForCurrentPdf();
 
