@@ -24,14 +24,51 @@ When you annotate a PDF, the plugin creates:
 
 ## Install
 
-Download `main.js`, `pdf.worker.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/kirangathani/magnifying-glass/releases/latest) and place them in your vault at `.obsidian/plugins/pdf-commenter/`.
+### Via BRAT (recommended)
+
+1. Install the [BRAT plugin](https://github.com/TfTHacker/obsidian42-brat) from Obsidian's community plugin browser (Settings > Community plugins > Browse, search "BRAT").
+2. Open BRAT settings (Settings > BRAT).
+3. Click **Add Beta plugin**.
+4. Paste the repo URL: `kirangathani/pdf-commenter`
+5. Click **Add Plugin**. BRAT will download the latest release and keep it updated.
+6. Enable **PDF Commenter** in Settings > Community plugins.
+
+### Manual install
+
+Download `main.js`, `pdf.worker.js`, `styles.css`, and `manifest.json` from the [latest release](https://github.com/kirangathani/pdf-commenter/releases/latest) and place them in your vault at `.obsidian/plugins/pdf-commenter/`.
 
 ## Keyboard shortcuts
 
+### General
+
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+Alt+M` | Create comment from selection |
+| `Ctrl+Alt+M` | Create comment from selected text |
+| `Alt+Backspace` | Delete selected comment |
+| `Ctrl+Z` / `Cmd+Z` | Undo last comment deletion |
+| `Alt+D` | Cycle to next comment |
+| `Alt+Shift+D` | Cycle to previous comment |
+| `Ctrl+F` / `Cmd+F` | Open search bar |
+| `Escape` | Close search bar / context menu |
+| `Ctrl+Scroll` / `Cmd+Scroll` | Pinch-to-zoom |
+
+### Comment editor
+
+| Shortcut | Action |
+|----------|--------|
 | `Ctrl+Enter` / `Cmd+Enter` | Save comment |
+| `[[` | Open wikilink autocomplete |
+| `Arrow Up` / `Arrow Down` | Navigate autocomplete suggestions |
+| `Enter` | Accept selected suggestion |
+| `Escape` | Dismiss autocomplete |
+
+### Search bar
+
+| Shortcut | Action |
+|----------|--------|
+| `Enter` | Next search result |
+| `Shift+Enter` | Previous search result |
+| `Escape` | Close search bar |
 
 ## Build from source
 
