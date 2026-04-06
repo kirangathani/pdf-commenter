@@ -217,8 +217,13 @@ export class PdfCommenterView extends FileView {
             // Create controls section
             this.controlsSection = container.createEl('div', { cls: 'controls-section' });
 
-            // Header
-            this.titleEl = this.controlsSection.createEl('h2', { text: 'PDF viewer' });
+            // Header with rename support
+            const headerRow = this.controlsSection.createEl('div', { cls: 'pdf-header-row' });
+            this.titleEl = headerRow.createEl('h2', { text: 'PDF viewer' });
+            const renameBtn = headerRow.createEl('button', { cls: 'pdf-rename-btn', attr: { 'aria-label': 'Rename PDF' } });
+            renameBtn.innerHTML = '&#9998;'; // pencil icon
+            renameBtn.addEventListener('click', () => this.startRename());
+            this.titleEl.addEventListener('dblclick', () => this.startRename());
 
             // Zoom controls
             const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
@@ -1307,8 +1312,11 @@ export class PdfCommenterView extends FileView {
             `createdAt: "${new Date(ann.createdAt).toISOString()}"\n` +
             `---\n\n`;
 
+        const pdfLink = `[[${this.file.path}|${this.file.basename}]]`;
         const initialBody =
             `> ${ann.selectedText.replace(/\n/g, '\n> ')}\n\n` +
+            `**Source:** ${pdfLink} (p. ${ann.anchor.pageNumber})\n\n` +
+            `---\n\n` +
             `${(ann.commentText ?? '').trim()}\n`;
 
         const content = frontmatter + initialBody;
@@ -1655,5 +1663,145 @@ export class PdfCommenterView extends FileView {
         if (!Number.isFinite(pageNumber)) return null;
 
         return { pageNumber, yNorm };
+    }
+
+    // ── Rename PDF ──────────────────────────────────────────────
+
+    private startRename(): void {
+        if (!this.file) return;
+
+        const currentName = this.file.basename;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = currentName;
+        input.className = 'pdf-rename-input';
+
+        const titleParent = this.titleEl.parentElement;
+        if (!titleParent) return;
+        this.titleEl.style.display = 'none';
+        titleParent.insertBefore(input, this.titleEl);
+        input.focus();
+        input.select();
+
+        const finish = async (commit: boolean) => {
+            if (input.dataset.done) return;
+            input.dataset.done = '1';
+            const newName = input.value.trim();
+            input.remove();
+            this.titleEl.style.display = '';
+
+            if (commit && newName && newName !== currentName && this.file) {
+                await this.renamePdf(newName);
+            }
+        };
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); void finish(true); }
+            if (e.key === 'Escape') { e.preventDefault(); void finish(false); }
+        });
+        input.addEventListener('blur', () => void finish(true));
+    }
+
+    private async renamePdf(newBaseName: string): Promise<void> {
+        const file = this.file;
+        if (!file) return;
+
+        const oldPath = file.path;
+        const oldDir = oldPath.contains('/') ? oldPath.slice(0, oldPath.lastIndexOf('/')) : '';
+        const newFileName = `${newBaseName}.pdf`;
+        const newPath = oldDir ? `${oldDir}/${newFileName}` : newFileName;
+
+        // Prevent overwriting an existing file
+        if (this.app.vault.getAbstractFileByPath(newPath)) {
+            console.warn('[rename] target already exists:', newPath);
+            return;
+        }
+
+        const oldSidecarPath = this.getAnnotationsPathForPdf(oldPath);
+        const oldFolderPath = this.currentPdfCommentsFolder;
+
+        try {
+            // 1. Rename the PDF file itself
+            await this.app.fileManager.renameFile(file, newPath);
+
+            // 2. Rename the sidecar JSON and update pdfPath inside it
+            const oldSidecar = this.app.vault.getAbstractFileByPath(oldSidecarPath);
+            if (oldSidecar instanceof TFile) {
+                const newSidecarPath = this.getAnnotationsPathForPdf(newPath);
+                await this.app.fileManager.renameFile(oldSidecar, newSidecarPath);
+
+                // Update pdfPath stored inside the sidecar
+                const sidecarFile = this.app.vault.getAbstractFileByPath(newSidecarPath);
+                if (sidecarFile instanceof TFile) {
+                    const raw = await this.app.vault.read(sidecarFile);
+                    const parsed = JSON.parse(raw) as PdfAnnotationsFile;
+                    parsed.pdfPath = newPath;
+                    await this.app.vault.modify(sidecarFile, JSON.stringify(parsed, null, 2));
+                }
+            }
+
+            // 3. Rename the per-PDF comments folder
+            if (oldFolderPath) {
+                const oldFolder = this.app.vault.getAbstractFileByPath(oldFolderPath);
+                if (oldFolder instanceof TFolder) {
+                    const newFolderName = this.sanitizeVaultName(newBaseName);
+                    const newFolderPath = normalizePath(newFolderName);
+                    // Only rename if target doesn't already exist
+                    if (!this.app.vault.getAbstractFileByPath(newFolderPath)) {
+                        await this.app.fileManager.renameFile(oldFolder, newFolderPath);
+                        this.currentPdfCommentsFolder = newFolderPath;
+                    }
+                }
+            }
+
+            // 4. Update annotation notePaths to reflect renamed folder
+            if (oldFolderPath && this.currentPdfCommentsFolder && oldFolderPath !== this.currentPdfCommentsFolder) {
+                for (const ann of this.annotations) {
+                    if (ann.notePath?.startsWith(oldFolderPath + '/')) {
+                        ann.notePath = this.currentPdfCommentsFolder + ann.notePath.slice(oldFolderPath.length);
+                    }
+                }
+            }
+
+            // 5. Update pdfPath in all comment note frontmatter and wikilinks
+            await this.updateCommentNoteFrontmatter(oldPath, newPath);
+
+            // 6. Update the title display
+            this.titleEl.textContent = newBaseName;
+
+        } catch (e) {
+            console.error('[rename] Failed to rename PDF:', e);
+        }
+    }
+
+    private async updateCommentNoteFrontmatter(oldPdfPath: string, newPdfPath: string): Promise<void> {
+        for (const ann of this.annotations) {
+            if (!ann.notePath) continue;
+            const noteFile = this.app.vault.getAbstractFileByPath(ann.notePath);
+            if (!(noteFile instanceof TFile)) continue;
+
+            try {
+                const md = await this.app.vault.read(noteFile);
+                // Replace the pdfPath in frontmatter
+                const escapedOld = oldPdfPath.replace(/"/g, '\\"');
+                const escapedNew = newPdfPath.replace(/"/g, '\\"');
+                const updated = md.replace(
+                    `pdfPath: "${escapedOld}"`,
+                    `pdfPath: "${escapedNew}"`
+                );
+                // Also update the wikilink in the body if present
+                const oldLink = `[[${oldPdfPath}|`;
+                const newBaseName = newPdfPath.contains('/') ? newPdfPath.slice(newPdfPath.lastIndexOf('/') + 1) : newPdfPath;
+                const newDisplayName = newBaseName.toLowerCase().endsWith('.pdf') ? newBaseName.slice(0, -4) : newBaseName;
+                const newLink = `[[${newPdfPath}|${newDisplayName}`;
+                const finalContent = updated.split(oldLink).join(newLink);
+
+                if (finalContent !== md) {
+                    await this.app.vault.modify(noteFile, finalContent);
+                }
+            } catch (e) {
+                console.warn('[rename] failed to update note frontmatter:', ann.notePath, e);
+            }
+        }
     }
 }
