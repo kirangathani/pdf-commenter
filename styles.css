@@ -174,7 +174,7 @@
 
 .pdf-comment-marker.is-collapsed .pdf-comment-preview {
     overflow: hidden;
-    padding: 4px 6px;
+    padding: 8px 28px 8px 10px;
     font-size: 13px;
     line-height: 1.4;
     /* 5 lines: 5 * (13px * 1.4) = 91px + 8px vertical padding = 99px */
