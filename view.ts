@@ -136,6 +136,7 @@ export class PdfCommenterView extends FileView {
     private searchMatches: { source: 'pdf' | 'comment'; pageNumber: number }[] = [];
     private searchCurrentIdx = -1;
     private searchHighlightEls: HTMLElement[] = [];
+    private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -616,6 +617,7 @@ export class PdfCommenterView extends FileView {
         this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
+        if (this.searchDebounceTimer) { clearTimeout(this.searchDebounceTimer); this.searchDebounceTimer = null; }
         if (this.activeWikilinkSuggest) {
             this.activeWikilinkSuggest.destroy();
             this.activeWikilinkSuggest = null;
@@ -784,7 +786,10 @@ export class PdfCommenterView extends FileView {
         this.searchMatchLabel = this.searchBar.createEl('span', { cls: 'pdf-search-match-label' });
         const searchClose = this.searchBar.createEl('button', { cls: 'pdf-search-close-btn', text: '×' });
 
-        this.searchInput.addEventListener('input', () => this.performSearch());
+        this.searchInput.addEventListener('input', () => {
+            if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
+            this.searchDebounceTimer = setTimeout(() => this.performSearch(), 150);
+        });
         this.searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -822,7 +827,13 @@ export class PdfCommenterView extends FileView {
     }
 
     private clearSearchHighlights(): void {
-        for (const el of this.searchHighlightEls) el.remove();
+        for (const mark of this.searchHighlightEls) {
+            const parent = mark.parentNode;
+            if (!parent) continue;
+            while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+            parent.removeChild(mark);
+            parent.normalize();
+        }
         this.searchHighlightEls = [];
     }
 
@@ -837,44 +848,45 @@ export class PdfCommenterView extends FileView {
             return;
         }
 
+        // Helper: walk text nodes inside a root, wrap query matches in <mark>
+        const wrapMatches = (root: Node, source: 'pdf' | 'comment', pageNumber: number) => {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const textNodes: Text[] = [];
+            let n: Text | null;
+            while ((n = walker.nextNode() as Text | null)) textNodes.push(n);
+
+            for (const textNode of textNodes) {
+                let node: Text | null = textNode;
+                while (node) {
+                    const text = node.textContent ?? '';
+                    const idx = text.toLowerCase().indexOf(query!);
+                    if (idx === -1) break;
+
+                    // Split: [before][match][after]
+                    const matchNode = node.splitText(idx);
+                    const after = matchNode.splitText(query!.length);
+
+                    const mark = document.createElement('mark');
+                    mark.className = 'pdf-search-highlight';
+                    matchNode.parentNode!.insertBefore(mark, matchNode);
+                    mark.appendChild(matchNode);
+
+                    this.searchHighlightEls.push(mark);
+                    this.searchMatches.push({ source, pageNumber });
+
+                    // Continue searching in the remainder
+                    node = after;
+                }
+            }
+        };
+
         // Walk all text layer spans in the PDF container
         const pageContainers = this.pdfContainer.querySelectorAll<HTMLElement>('.pdf-page-container');
         for (const pageEl of Array.from(pageContainers)) {
             const pageNum = parseInt(pageEl.dataset.pageNumber ?? '0', 10);
             const spans = pageEl.querySelectorAll<HTMLElement>('.pdf-text-layer span, .textLayer span');
             for (const span of Array.from(spans)) {
-                const text = span.textContent ?? '';
-                const lower = text.toLowerCase();
-                let startIdx = 0;
-                while (true) {
-                    const idx = lower.indexOf(query, startIdx);
-                    if (idx === -1) break;
-                    // Create a highlight overlay positioned over this span region
-                    const highlightLayer = pageEl.querySelector('.pdf-highlight-layer') ?? pageEl;
-                    const spanRect = span.getBoundingClientRect();
-                    const parentRect = pageEl.getBoundingClientRect();
-
-                    // Approximate character-level positioning
-                    const charWidth = spanRect.width / (text.length || 1);
-                    const left = spanRect.left - parentRect.left + idx * charWidth;
-                    const width = charWidth * query.length;
-
-                    const mark = document.createElement('div');
-                    mark.className = 'pdf-search-highlight';
-                    mark.setCssStyles({
-                        position: 'absolute',
-                        left: `${left}px`,
-                        top: `${spanRect.top - parentRect.top}px`,
-                        width: `${width}px`,
-                        height: `${spanRect.height}px`,
-                    });
-                    highlightLayer.appendChild(mark);
-                    this.searchHighlightEls.push(mark);
-
-                    this.searchMatches.push({ source: 'pdf', pageNumber: pageNum });
-
-                    startIdx = idx + 1;
-                }
+                wrapMatches(span, 'pdf', pageNum);
             }
         }
 
@@ -883,42 +895,7 @@ export class PdfCommenterView extends FileView {
         for (const preview of Array.from(previews)) {
             const marker = preview.closest('.pdf-comment-marker') as HTMLElement | null;
             if (!marker) continue;
-            // Use a TreeWalker to find text nodes inside rendered markdown
-            const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
-            let textNode: Text | null;
-            while ((textNode = walker.nextNode() as Text | null)) {
-                const text = textNode.textContent ?? '';
-                const lower = text.toLowerCase();
-                let startIdx = 0;
-                while (true) {
-                    const idx = lower.indexOf(query, startIdx);
-                    if (idx === -1) break;
-
-                    // Create a highlight using a Range for accurate positioning
-                    const range = document.createRange();
-                    range.setStart(textNode, idx);
-                    range.setEnd(textNode, idx + query.length);
-                    const rects = range.getClientRects();
-                    const markerRect = marker.getBoundingClientRect();
-
-                    for (const rect of Array.from(rects)) {
-                        const mark = document.createElement('div');
-                        mark.className = 'pdf-search-highlight';
-                        mark.setCssStyles({
-                            position: 'absolute',
-                            left: `${rect.left - markerRect.left}px`,
-                            top: `${rect.top - markerRect.top}px`,
-                            width: `${rect.width}px`,
-                            height: `${rect.height}px`,
-                        });
-                        marker.appendChild(mark);
-                        this.searchHighlightEls.push(mark);
-                        this.searchMatches.push({ source: 'comment', pageNumber: 0 });
-                    }
-
-                    startIdx = idx + 1;
-                }
-            }
+            wrapMatches(preview, 'comment', 0);
         }
 
         if (this.searchMatches.length > 0) {
@@ -945,21 +922,11 @@ export class PdfCommenterView extends FileView {
         el.addClass('is-active');
 
         const match = this.searchMatches[this.searchCurrentIdx];
-        if (match.source === 'comment') {
-            // Scroll the comments pane to show the match
-            const marker = el.closest('.pdf-comment-marker') as HTMLElement | null;
-            if (marker) {
-                const targetTop = marker.offsetTop - this.commentsPane.clientHeight / 3;
-                this.commentsPane.scrollTop = Math.max(0, targetTop);
-            }
-        } else {
-            // Scroll the PDF container to show the match
-            const pageEl = el.closest('.pdf-page-container') as HTMLElement | null;
-            if (pageEl) {
-                const targetTop = pageEl.offsetTop + el.offsetTop - this.pdfContainer.clientHeight / 3;
-                this.pdfContainer.scrollTop = Math.max(0, targetTop);
-            }
-        }
+        const scrollContainer = match.source === 'comment' ? this.commentsPane : this.pdfContainer;
+        const elRect = el.getBoundingClientRect();
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const offset = elRect.top - containerRect.top + scrollContainer.scrollTop - scrollContainer.clientHeight / 3;
+        scrollContainer.scrollTop = Math.max(0, offset);
     }
 
     private updateSearchLabel(): void {
@@ -981,7 +948,6 @@ export class PdfCommenterView extends FileView {
     private async renderCommentMarkers(): Promise<void> {
         if (!this.commentsTrack || !this.pdfContainer) return;
         const gen = ++this.renderGeneration;
-        this.commentsTrack.empty();
 
         const MARKER_GAP = 10;
 
@@ -998,8 +964,15 @@ export class PdfCommenterView extends FileView {
         // Phase 2: Sort by ideal position
         items.sort((a, b) => a.idealTop - b.idealTop);
 
-        // Phase 3: Create DOM elements without positioning
-        this.commentsTrack.setCssStyles({ visibility: 'hidden' });
+        // Phase 3: Create DOM elements in a temporary off-screen container so the
+        // old content stays visible while async rendering (note reads, markdown
+        // preview) is in flight. The container is swapped in atomically in Phase 4.
+        const staging = document.createElement('div');
+        staging.style.visibility = 'hidden';
+        staging.style.position = 'absolute';
+        staging.style.left = '-9999px';
+        this.commentsTrack.appendChild(staging);
+
         const renderPromises: Promise<void>[] = [];
         let pendingFocusTextarea: HTMLTextAreaElement | null = null;
 
@@ -1007,15 +980,15 @@ export class PdfCommenterView extends FileView {
             const a = item.annotation;
             const isSelected = a.id === this.selectedAnnotationId;
 
-            const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
+            const marker = staging.createEl('div', { cls: 'pdf-comment-marker' });
             if (!isSelected) marker.addClass('is-collapsed');
             item.markerEl = marker;
 
             marker.dataset.annotationId = a.id;
             marker.toggleClass('is-selected', isSelected);
             marker.addEventListener('click', () => {
-                this.selectedAnnotationId = a.id;
-                void this.renderCommentMarkers();
+                if (this.selectedAnnotationId === a.id) return;
+                void this.swapSelection(a.id);
             });
 
             // Delete button (top-right X)
@@ -1027,151 +1000,21 @@ export class PdfCommenterView extends FileView {
             });
 
             if (isSelected) {
-                const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
-                const textarea = editor.createEl('textarea', {
-                    cls: 'pdf-comment-inline-textarea',
-                    attr: { rows: '3', placeholder: 'Write a comment… (supports [[backlinks]])' },
-                });
-                const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
-                const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
-                saveBtn.disabled = true;
-                let isSaving = false;
-
-                const autoResize = () => {
-                    textarea.style.height = 'auto';
-                    textarea.style.height = `${textarea.scrollHeight}px`;
-                };
-
-                // Provide default frontmatter/quote/meta so saving works even before notePath is ready.
-                textarea.dataset.fm = '';
-                textarea.dataset.quote = `> ${a.selectedText.replace(/\n/g, '\n> ')}\n\n`;
-                textarea.dataset.meta = '';
-
-                // Load the current comment body from the note (excluding frontmatter + quote block)
-                const loadPromise = (async () => {
-                    if (!a.notePath) return;
-                    const af = this.app.vault.getAbstractFileByPath(a.notePath);
-                    if (!(af instanceof TFile)) return;
-                    const md = await this.app.vault.read(af);
-                    const { frontmatter, body } = this.stripFrontmatter(md);
-                    const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
-                    const { meta, userText } = this.splitMetaPrefix(commentBody);
-                    textarea.dataset.fm = frontmatter;
-                    textarea.dataset.quote = quoteBlock;
-                    textarea.dataset.meta = meta;
-                    textarea.value = userText.trimStart();
-                    autoResize();
-                })();
+                const { loadPromise, textarea } = this.setupEditorInMarker(marker, a);
                 renderPromises.push(loadPromise);
 
-                textarea.addEventListener('click', (e) => e.stopPropagation());
-                textarea.addEventListener('input', () => {
-                    autoResize();
-                    saveBtn.disabled = false;
-                    this.activeInlineDirty = true;
-                });
-
-                const doSave = async () => {
-                    if (isSaving) return;
-                    // Ensure note exists
-                    if (!a.notePath) {
-                        const existing = this.pendingNoteCreation.get(a.id);
-                        if (existing) {
-                            try {
-                                const note = await existing;
-                                a.notePath = note.path;
-                                await this.saveAnnotationsForCurrentPdf();
-                            } catch (e) {
-                                console.warn('[comment-inline] note creation failed:', e);
-                                return;
-                            }
-                        } else if (this.file) {
-                            const currentFile = this.file;
-                            const p = (async () => {
-                                if (!this.currentPdfCommentsFolder) {
-                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
-                                }
-                                const note = await this.createCommentNote(a);
-                                a.notePath = note.path;
-                                await this.saveAnnotationsForCurrentPdf();
-                                return note;
-                            })();
-                            this.pendingNoteCreation.set(a.id, p);
-                            try {
-                                const note = await p;
-                                a.notePath = note.path;
-                            } catch (e) {
-                                console.warn('[comment-inline] note creation failed:', e);
-                                return;
-                            } finally {
-                                this.pendingNoteCreation.delete(a.id);
-                            }
-                        } else {
-                            return;
-                        }
-                    }
-
-                    const af = this.app.vault.getAbstractFileByPath(a.notePath);
-                    if (!(af instanceof TFile)) return;
-
-                    // If dataset.fm was never populated (note created in background
-                    // after renderCommentMarkers set defaults), read the note now to
-                    // recover frontmatter, quote, and meta (source backlink + separator).
-                    if (!textarea.dataset.fm) {
-                        const md = await this.app.vault.read(af);
-                        const { frontmatter, body } = this.stripFrontmatter(md);
-                        const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
-                        const { meta } = this.splitMetaPrefix(commentBody);
-                        textarea.dataset.fm = frontmatter;
-                        textarea.dataset.quote = quoteBlock;
-                        textarea.dataset.meta = meta;
-                    }
-
-                    isSaving = true;
-                    saveBtn.disabled = true;
-                    try {
-                        const fm = textarea.dataset.fm ?? '';
-                        const quote = textarea.dataset.quote ?? '';
-                        const meta = textarea.dataset.meta ?? '';
-                        const next = `${fm}${quote}${meta}${textarea.value}\n`;
-                        await this.app.vault.modify(af, next);
-                        this.activeInlineDirty = false;
-                        this.selectedAnnotationId = null;
-                        void this.renderCommentMarkers();
-                    } catch (err) {
-                        console.warn('[comment-inline] failed to save:', err);
-                        saveBtn.disabled = false;
-                    } finally {
-                        isSaving = false;
-                    }
-                };
-
-                this.activeInlineTextarea = textarea;
-                this.activeInlineSave = doSave;
-                this.activeInlineDirty = false;
-
-                // Focus is deferred to after Phase 4 (visibility restore)
                 if (this.pendingFocusAnnotationId === a.id) {
                     this.pendingFocusAnnotationId = null;
                     pendingFocusTextarea = textarea;
                 }
-
-                saveBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    void doSave();
-                });
-
-                if (this.activeWikilinkSuggest) this.activeWikilinkSuggest.destroy();
-                this.activeWikilinkSuggest = new WikilinkSuggest(this.app, textarea);
             } else {
-                const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
-                renderPromises.push(this.renderNotePreviewInto(a, preview));
+                renderPromises.push(this.setupPreviewInMarker(marker, a));
             }
         }
 
-        // Phase 4: Wait for content to render, then measure and position
+        // Phase 4: Wait for content to render, then measure, position, and swap in atomically
         await Promise.all(renderPromises);
-        if (gen !== this.renderGeneration) return; // stale render, bail
+        if (gen !== this.renderGeneration) { staging.remove(); return; } // stale render, bail
 
         let nextAvailableTop = 0;
         for (const item of items) {
@@ -1182,7 +1025,9 @@ export class PdfCommenterView extends FileView {
             nextAvailableTop = placedTop + measuredHeight + MARKER_GAP;
         }
 
-        this.commentsTrack.setCssStyles({ visibility: 'visible' });
+        // Atomic swap: remove old content, move new markers in
+        this.commentsTrack.empty();
+        while (staging.firstChild) this.commentsTrack.appendChild(staging.firstChild);
 
         if (nextAvailableTop > this.pdfContainer.scrollHeight) {
             this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
@@ -1193,6 +1038,7 @@ export class PdfCommenterView extends FileView {
             const ta = pendingFocusTextarea;
             requestAnimationFrame(() => {
                 try {
+                    ta.value = ta.value.trimEnd();
                     ta.focus();
                     const len = ta.value.length;
                     ta.setSelectionRange(len, len);
@@ -1201,6 +1047,253 @@ export class PdfCommenterView extends FileView {
                 }
             });
         }
+    }
+
+    /** Set up an inline editor inside a marker. Returns the load promise and textarea. */
+    private setupEditorInMarker(
+        marker: HTMLElement,
+        a: PdfAnnotation,
+    ): { loadPromise: Promise<void>; textarea: HTMLTextAreaElement } {
+        const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
+        const textarea = editor.createEl('textarea', {
+            cls: 'pdf-comment-inline-textarea',
+            attr: { rows: '3', placeholder: 'Write a comment… (supports [[backlinks]])' },
+        });
+        const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
+        const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
+        saveBtn.disabled = true;
+        let isSaving = false;
+
+        const autoResize = () => {
+            textarea.style.height = 'auto';
+            textarea.style.height = `${textarea.scrollHeight}px`;
+        };
+
+        textarea.dataset.fm = '';
+        textarea.dataset.quote = `> ${a.selectedText.replace(/\n/g, '\n> ')}\n\n`;
+        textarea.dataset.meta = '';
+
+        const loadPromise = (async () => {
+            if (!a.notePath) return;
+            const af = this.app.vault.getAbstractFileByPath(a.notePath);
+            if (!(af instanceof TFile)) return;
+            const md = await this.app.vault.read(af);
+            const { frontmatter, body } = this.stripFrontmatter(md);
+            const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+            const { meta, userText } = this.splitMetaPrefix(commentBody);
+            textarea.dataset.fm = frontmatter;
+            textarea.dataset.quote = quoteBlock;
+            textarea.dataset.meta = meta;
+            textarea.value = userText.trimStart();
+            autoResize();
+        })();
+
+        textarea.addEventListener('click', (e) => e.stopPropagation());
+        textarea.addEventListener('input', () => {
+            autoResize();
+            saveBtn.disabled = false;
+            this.activeInlineDirty = true;
+        });
+
+        const doSave = async () => {
+            if (isSaving) return;
+            if (!a.notePath) {
+                const existing = this.pendingNoteCreation.get(a.id);
+                if (existing) {
+                    try {
+                        const note = await existing;
+                        a.notePath = note.path;
+                        await this.saveAnnotationsForCurrentPdf();
+                    } catch (e) {
+                        console.warn('[comment-inline] note creation failed:', e);
+                        return;
+                    }
+                } else if (this.file) {
+                    const currentFile = this.file;
+                    const p = (async () => {
+                        if (!this.currentPdfCommentsFolder) {
+                            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
+                        }
+                        const note = await this.createCommentNote(a);
+                        a.notePath = note.path;
+                        await this.saveAnnotationsForCurrentPdf();
+                        return note;
+                    })();
+                    this.pendingNoteCreation.set(a.id, p);
+                    try {
+                        const note = await p;
+                        a.notePath = note.path;
+                    } catch (e) {
+                        console.warn('[comment-inline] note creation failed:', e);
+                        return;
+                    } finally {
+                        this.pendingNoteCreation.delete(a.id);
+                    }
+                } else {
+                    return;
+                }
+            }
+
+            const af = this.app.vault.getAbstractFileByPath(a.notePath);
+            if (!(af instanceof TFile)) return;
+
+            if (!textarea.dataset.fm) {
+                const md = await this.app.vault.read(af);
+                const { frontmatter, body } = this.stripFrontmatter(md);
+                const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+                const { meta } = this.splitMetaPrefix(commentBody);
+                textarea.dataset.fm = frontmatter;
+                textarea.dataset.quote = quoteBlock;
+                textarea.dataset.meta = meta;
+            }
+
+            isSaving = true;
+            saveBtn.disabled = true;
+            try {
+                const fm = textarea.dataset.fm ?? '';
+                const quote = textarea.dataset.quote ?? '';
+                const meta = textarea.dataset.meta ?? '';
+                const next = `${fm}${quote}${meta}${textarea.value}\n`;
+                await this.app.vault.modify(af, next);
+                this.activeInlineDirty = false;
+                this.selectedAnnotationId = null;
+                void this.renderCommentMarkers();
+            } catch (err) {
+                console.warn('[comment-inline] failed to save:', err);
+                saveBtn.disabled = false;
+            } finally {
+                isSaving = false;
+            }
+        };
+
+        this.activeInlineTextarea = textarea;
+        this.activeInlineSave = doSave;
+        this.activeInlineDirty = false;
+
+        saveBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            void doSave();
+        });
+
+        if (this.activeWikilinkSuggest) this.activeWikilinkSuggest.destroy();
+        this.activeWikilinkSuggest = new WikilinkSuggest(this.app, textarea);
+
+        return { loadPromise, textarea };
+    }
+
+    /** Set up a collapsed preview inside a marker. Returns the render promise. */
+    private setupPreviewInMarker(marker: HTMLElement, a: PdfAnnotation): Promise<void> {
+        const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
+        return this.renderNotePreviewInto(a, preview);
+    }
+
+    /** Recalculate vertical positions of all markers in the comments track. */
+    private repositionMarkers(): void {
+        if (!this.commentsTrack || !this.pdfContainer) return;
+        const MARKER_GAP = 10;
+        const markers = Array.from(this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-marker'));
+
+        // Build (marker, idealTop) pairs in annotation order
+        const positioned: { el: HTMLElement; idealTop: number }[] = [];
+        for (const marker of markers) {
+            const annId = marker.dataset.annotationId;
+            const ann = this.annotations.find(a => a.id === annId);
+            if (!ann) continue;
+            const pageEl = this.pdfContainer.querySelector<HTMLElement>(
+                `.pdf-page-container[data-page-number="${ann.anchor.pageNumber}"]`
+            );
+            if (!pageEl) continue;
+            positioned.push({
+                el: marker,
+                idealTop: pageEl.offsetTop + (ann.anchor.yNorm * pageEl.offsetHeight),
+            });
+        }
+        positioned.sort((a, b) => a.idealTop - b.idealTop);
+
+        let nextAvailableTop = 0;
+        for (const { el, idealTop } of positioned) {
+            const placedTop = Math.max(idealTop, nextAvailableTop);
+            el.setCssStyles({ top: `${placedTop}px` });
+            nextAvailableTop = placedTop + el.offsetHeight + MARKER_GAP;
+        }
+
+        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
+            this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
+        }
+    }
+
+    /**
+     * Switch selection from one comment to another without a full re-render.
+     * Collapses the previously selected marker (editor → preview) and expands
+     * the newly selected one (preview → editor).
+     */
+    private async swapSelection(newId: string): Promise<void> {
+        if (!this.commentsTrack) return;
+        const oldId = this.selectedAnnotationId;
+
+        // Handle dirty state on the outgoing editor
+        if (oldId && this.activeInlineDirty && this.activeInlineSave) {
+            await this.activeInlineSave();
+            // activeInlineSave triggers a full renderCommentMarkers on success,
+            // so bail — the full render will handle the new selection.
+            return;
+        }
+        // Handle empty comment (auto-delete)
+        if (oldId && this.activeInlineTextarea && !this.activeInlineTextarea.value.trim()) {
+            this.selectedAnnotationId = null;
+            this.activeInlineTextarea = null;
+            this.activeInlineSave = null;
+            void this.deleteAnnotation(oldId);
+            return;
+        }
+
+        this.selectedAnnotationId = newId;
+
+        // Collapse old marker: replace editor with preview
+        if (oldId) {
+            const oldMarker = this.commentsTrack.querySelector<HTMLElement>(
+                `.pdf-comment-marker[data-annotation-id="${oldId}"]`
+            );
+            if (oldMarker) {
+                const oldAnn = this.annotations.find(a => a.id === oldId);
+                oldMarker.removeClass('is-selected');
+                oldMarker.addClass('is-collapsed');
+                const editorEl = oldMarker.querySelector('.pdf-comment-inline-editor');
+                if (editorEl) editorEl.remove();
+                if (oldAnn) await this.setupPreviewInMarker(oldMarker, oldAnn);
+            }
+        }
+
+        this.activeInlineTextarea = null;
+        this.activeInlineSave = null;
+        this.activeInlineDirty = false;
+
+        // Expand new marker: replace preview with editor
+        const newMarker = this.commentsTrack.querySelector<HTMLElement>(
+            `.pdf-comment-marker[data-annotation-id="${newId}"]`
+        );
+        if (newMarker) {
+            const newAnn = this.annotations.find(a => a.id === newId);
+            newMarker.addClass('is-selected');
+            newMarker.removeClass('is-collapsed');
+            const previewEl = newMarker.querySelector('.pdf-comment-preview');
+            if (previewEl) previewEl.remove();
+            if (newAnn) {
+                const { loadPromise, textarea } = this.setupEditorInMarker(newMarker, newAnn);
+                await loadPromise;
+                this.repositionMarkers();
+                requestAnimationFrame(() => {
+                    try {
+                        textarea.value = textarea.value.trimEnd();
+                        textarea.focus();
+                        const len = textarea.value.length;
+                        textarea.setSelectionRange(len, len);
+                    } catch { /* ignore */ }
+                });
+            }
+        }
+
+        this.repositionMarkers();
     }
 
     private renderHighlights(): void {

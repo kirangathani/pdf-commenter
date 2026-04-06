@@ -653,12 +653,11 @@ body.pdf-commenter-dark {
     color: var(--text-normal);
 }
 
-/* Search highlights overlaid on PDF pages */
+/* Search highlights (inline <mark> elements) */
 .pdf-search-highlight {
     background: rgba(255, 213, 0, 0.35);
     border-radius: 2px;
-    pointer-events: none;
-    z-index: 4;
+    color: transparent;
 }
 
 .pdf-search-highlight.is-active {
