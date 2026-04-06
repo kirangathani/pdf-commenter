@@ -294,7 +294,7 @@ body.pdf-commenter-dark {
 .pdf-comment-preview {
     background: var(--pdc-card-bg);
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 6px 28px 6px 10px;
     box-sizing: border-box;
     overflow: auto;
     flex: 1 1 auto;
@@ -314,6 +314,8 @@ body.pdf-commenter-dark {
 .pdf-comment-preview * {
     color: var(--pdc-card-text);
     font-family: Consolas, "Courier New", monospace;
+    overflow-wrap: break-word;
+    word-break: break-all;
 }
 
 .pdf-comment-preview-empty {

@@ -594,6 +594,14 @@ export class PdfCommenterView extends FileView {
     }
 
     async onClose(): Promise<void> {
+        // Commit any pending deletions before super.onClose() nulls this.file
+        for (const entry of this.deleteUndoStack) {
+            clearTimeout(entry.timer);
+            await this.commitDeletion(entry.annotation.id);
+        }
+        this.deleteUndoStack = [];
+        this.dismissDeleteToast();
+
         await super.onClose();
         if (this.pdfViewer) {
             this.pdfViewer.destroy();
@@ -622,13 +630,6 @@ export class PdfCommenterView extends FileView {
             this.activeWikilinkSuggest.destroy();
             this.activeWikilinkSuggest = null;
         }
-        // Commit any pending deletions immediately on close
-        for (const entry of this.deleteUndoStack) {
-            clearTimeout(entry.timer);
-            void this.commitDeletion(entry.annotation.id);
-        }
-        this.deleteUndoStack = [];
-        this.dismissDeleteToast();
     }
 
     private resolveWorkerSrc(): string | undefined {
@@ -1554,15 +1555,24 @@ export class PdfCommenterView extends FileView {
 
             // Ensure per-PDF folder exists; migrate missing notePath by creating notes
             this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
-            let migrated = false;
+            let dirty = false;
+
+            // Prune orphaned annotations whose backing note was trashed
+            const before = this.annotations.length;
+            this.annotations = this.annotations.filter(ann => {
+                if (!ann.notePath) return true; // will be migrated below
+                return this.app.vault.getAbstractFileByPath(ann.notePath) instanceof TFile;
+            });
+            if (this.annotations.length < before) dirty = true;
+
             for (const ann of this.annotations) {
                 if (!ann.notePath) {
                     const note = await this.createCommentNote(ann);
                     ann.notePath = note.path;
-                    migrated = true;
+                    dirty = true;
                 }
             }
-            if (migrated) await this.saveAnnotationsForCurrentPdf();
+            if (dirty) await this.saveAnnotationsForCurrentPdf();
         } catch (e) {
             console.warn('[annotations] Failed to load annotations:', e);
             this.annotations = [];
