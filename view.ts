@@ -1042,9 +1042,10 @@ export class PdfCommenterView extends FileView {
                     textarea.style.height = `${textarea.scrollHeight}px`;
                 };
 
-                // Provide default frontmatter/quote so saving works even before notePath is ready.
+                // Provide default frontmatter/quote/meta so saving works even before notePath is ready.
                 textarea.dataset.fm = '';
                 textarea.dataset.quote = `> ${a.selectedText.replace(/\n/g, '\n> ')}\n\n`;
+                textarea.dataset.meta = '';
 
                 // Load the current comment body from the note (excluding frontmatter + quote block)
                 const loadPromise = (async () => {
@@ -1054,9 +1055,11 @@ export class PdfCommenterView extends FileView {
                     const md = await this.app.vault.read(af);
                     const { frontmatter, body } = this.stripFrontmatter(md);
                     const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+                    const { meta, userText } = this.splitMetaPrefix(commentBody);
                     textarea.dataset.fm = frontmatter;
                     textarea.dataset.quote = quoteBlock;
-                    textarea.value = commentBody.trimStart();
+                    textarea.dataset.meta = meta;
+                    textarea.value = userText.trimStart();
                     autoResize();
                 })();
                 renderPromises.push(loadPromise);
@@ -1111,12 +1114,26 @@ export class PdfCommenterView extends FileView {
                     const af = this.app.vault.getAbstractFileByPath(a.notePath);
                     if (!(af instanceof TFile)) return;
 
+                    // If dataset.fm was never populated (note created in background
+                    // after renderCommentMarkers set defaults), read the note now to
+                    // recover frontmatter, quote, and meta (source backlink + separator).
+                    if (!textarea.dataset.fm) {
+                        const md = await this.app.vault.read(af);
+                        const { frontmatter, body } = this.stripFrontmatter(md);
+                        const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+                        const { meta } = this.splitMetaPrefix(commentBody);
+                        textarea.dataset.fm = frontmatter;
+                        textarea.dataset.quote = quoteBlock;
+                        textarea.dataset.meta = meta;
+                    }
+
                     isSaving = true;
                     saveBtn.disabled = true;
                     try {
                         const fm = textarea.dataset.fm ?? '';
                         const quote = textarea.dataset.quote ?? '';
-                        const next = `${fm}${quote}${textarea.value}\n`;
+                        const meta = textarea.dataset.meta ?? '';
+                        const next = `${fm}${quote}${meta}${textarea.value}\n`;
                         await this.app.vault.modify(af, next);
                         this.activeInlineDirty = false;
                         this.selectedAnnotationId = null;
@@ -1278,6 +1295,48 @@ export class PdfCommenterView extends FileView {
         return { quoteBlock, commentBody };
     }
 
+    /**
+     * Split the "meta" prefix (Source backlink + horizontal rule) from the
+     * user's actual comment text.  The meta section looks like:
+     *
+     *   **Source:** [[…]] (p. N)
+     *
+     *   ---
+     *
+     * Everything after the first `---` line (horizontal rule) that follows
+     * a **Source:** line is considered user text.
+     */
+    private splitMetaPrefix(commentBody: string): { meta: string; userText: string } {
+        const lines = (commentBody ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        let i = 0;
+
+        // Skip leading blanks
+        while (i < lines.length && lines[i].trim() === '') i += 1;
+
+        // Check for **Source:** line
+        if (i < lines.length && /^\*\*Source:\*\*/.test(lines[i])) {
+            const metaStart = i;
+            i += 1;
+            // Skip blanks after Source line
+            while (i < lines.length && lines[i].trim() === '') i += 1;
+            // Expect a horizontal rule (--- or ***)
+            if (i < lines.length && /^-{3,}$|^\*{3,}$/.test(lines[i].trim())) {
+                i += 1;
+                // Skip blanks after the rule
+                while (i < lines.length && lines[i].trim() === '') i += 1;
+                // Everything up to here is meta; reconstruct with trailing \n\n
+                const metaLines = lines.slice(metaStart, i);
+                return {
+                    meta: metaLines.join('\n').trimEnd() + '\n\n',
+                    userText: lines.slice(i).join('\n'),
+                };
+            }
+        }
+
+        // No meta prefix found — everything is user text
+        return { meta: '', userText: commentBody };
+    }
+
     private async ensurePerPdfFolder(pdfPath: string): Promise<string> {
         const base = this.sanitizeVaultName(this.getPdfBaseName(pdfPath));
         let candidate = normalizePath(base);
@@ -1364,7 +1423,8 @@ export class PdfCommenterView extends FileView {
                 container.dataset.mgSource = af.path;
                 const { body } = this.stripFrontmatter(md);
                 const { commentBody } = this.splitLeadingQuote(body);
-                await MarkdownRenderer.render(this.app, commentBody, container, af.path, this);
+                const { userText } = this.splitMetaPrefix(commentBody);
+                await MarkdownRenderer.render(this.app, userText, container, af.path, this);
                 return;
             }
         }
