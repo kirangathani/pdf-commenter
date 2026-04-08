@@ -263,8 +263,8 @@ body.pdf-commenter-dark {
     padding: 8px 28px 8px 10px;
     font-size: 13px;
     line-height: 1.4;
-    /* 5 lines: 5 * (13px * 1.4) = 91px + 8px vertical padding = 99px */
-    max-height: calc(5 * 1.4em + 8px);
+    /* 9 lines: 9 * (13px * 1.4) = 163.8px + 16px vertical padding (8px top + 8px bottom) */
+    max-height: calc(9 * 1.4em + 16px);
     position: relative;
 }
 
@@ -316,6 +316,10 @@ body.pdf-commenter-dark {
     font-family: Consolas, "Courier New", monospace;
     overflow-wrap: break-word;
     word-break: break-all;
+}
+
+.pdf-comment-preview a.internal-link {
+    color: var(--pdf-commenter-accent-light, var(--pdf-commenter-accent));
 }
 
 .pdf-comment-preview-empty {

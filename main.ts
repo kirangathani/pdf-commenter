@@ -29,6 +29,16 @@ function darkenHex(hex: string, amount: number): string {
 	return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
+function lightenHex(hex: string, amount: number): string {
+	const rgb = hexToRgb(hex);
+	if (!rgb) return hex;
+	const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+	const r = clamp(rgb.r + (255 - rgb.r) * amount);
+	const g = clamp(rgb.g + (255 - rgb.g) * amount);
+	const b = clamp(rgb.b + (255 - rgb.b) * amount);
+	return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
 function resolveColorToHex(color: string): string | null {
 	const el = document.createElement('div');
 	el.style.color = color;
@@ -61,6 +71,7 @@ function applyAccentColor(color: string): void {
 	document.body.style.setProperty('--pdf-commenter-accent-35', `rgba(${r}, ${g}, ${b}, 0.35)`);
 	document.body.style.setProperty('--pdf-commenter-accent-40', `rgba(${r}, ${g}, ${b}, 0.4)`);
 	document.body.style.setProperty('--pdf-commenter-accent-12', `rgba(${r}, ${g}, ${b}, 0.12)`);
+	document.body.style.setProperty('--pdf-commenter-accent-light', lightenHex(color, 0.3));
 }
 
 function clearAccentColor(): void {
@@ -68,6 +79,7 @@ function clearAccentColor(): void {
 		'--pdf-commenter-accent', '--pdf-commenter-accent-hover',
 		'--pdf-commenter-accent-25', '--pdf-commenter-accent-35',
 		'--pdf-commenter-accent-40', '--pdf-commenter-accent-12',
+		'--pdf-commenter-accent-light',
 	];
 	for (const p of props) document.body.style.removeProperty(p);
 }
