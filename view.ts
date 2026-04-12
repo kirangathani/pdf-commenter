@@ -222,7 +222,7 @@ export class PdfCommenterView extends FileView {
             const headerRow = this.controlsSection.createEl('div', { cls: 'pdf-header-row' });
             this.titleEl = headerRow.createEl('h2', { text: 'PDF viewer' });
             const renameBtn = headerRow.createEl('button', { cls: 'pdf-rename-btn', attr: { 'aria-label': 'Rename PDF' } });
-            renameBtn.innerHTML = '&#9998;'; // pencil icon
+            renameBtn.textContent = '\u270E'; // pencil icon
             renameBtn.addEventListener('click', () => this.startRename());
             this.titleEl.addEventListener('dblclick', () => this.startRename());
 
@@ -860,12 +860,12 @@ export class PdfCommenterView extends FileView {
                 let node: Text | null = textNode;
                 while (node) {
                     const text = node.textContent ?? '';
-                    const idx = text.toLowerCase().indexOf(query!);
+                    const idx = text.toLowerCase().indexOf(query);
                     if (idx === -1) break;
 
                     // Split: [before][match][after]
                     const matchNode = node.splitText(idx);
-                    const after = matchNode.splitText(query!.length);
+                    const after = matchNode.splitText(query.length);
 
                     const mark = document.createElement('mark');
                     mark.className = 'pdf-search-highlight';
@@ -894,7 +894,7 @@ export class PdfCommenterView extends FileView {
         // Walk comment previews in the comments pane
         const previews = this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-preview');
         for (const preview of Array.from(previews)) {
-            const marker = preview.closest('.pdf-comment-marker') as HTMLElement | null;
+            const marker = preview.closest('.pdf-comment-marker');
             if (!marker) continue;
             wrapMatches(preview, 'comment', 0);
         }
@@ -969,9 +969,7 @@ export class PdfCommenterView extends FileView {
         // old content stays visible while async rendering (note reads, markdown
         // preview) is in flight. The container is swapped in atomically in Phase 4.
         const staging = document.createElement('div');
-        staging.style.visibility = 'hidden';
-        staging.style.position = 'absolute';
-        staging.style.left = '-9999px';
+        staging.addClass('pdf-comments-staging');
         this.commentsTrack.appendChild(staging);
 
         const renderPromises: Promise<void>[] = [];
@@ -1066,8 +1064,8 @@ export class PdfCommenterView extends FileView {
         let isSaving = false;
 
         const autoResize = () => {
-            textarea.style.height = 'auto';
-            textarea.style.height = `${textarea.scrollHeight}px`;
+            textarea.setCssStyles({ height: 'auto' });
+            textarea.setCssStyles({ height: `${textarea.scrollHeight}px` });
         };
 
         textarea.dataset.fm = '';
@@ -1526,7 +1524,7 @@ export class PdfCommenterView extends FileView {
         const fallback = (ann.commentText ?? '').trim();
         container.createEl('div', {
             cls: 'pdf-comment-preview-empty',
-            text: fallback ? fallback : '(no note yet)',
+            text: fallback ? fallback : '(No note yet)',
         });
     }
 
@@ -1627,7 +1625,7 @@ export class PdfCommenterView extends FileView {
 
         // Push onto undo stack with a deferred commit timer
         const timer = setTimeout(() => {
-            this.commitDeletion(annotationId);
+            void this.commitDeletion(annotationId);
         }, PdfCommenterView.DELETE_UNDO_TIMEOUT_MS);
         this.deleteUndoStack.push({ annotation: ann, index: idx, timer });
 
@@ -1683,7 +1681,7 @@ export class PdfCommenterView extends FileView {
         }
 
         const toast = this.contentEl.createEl('div', { cls: 'pdf-comment-delete-toast' });
-        const msg = toast.createEl('span', { text: 'Comment deleted. You can undo a delete quickly with Ctrl+Z' });
+        toast.createEl('span', { text: 'Comment deleted. You can undo a delete quickly with Ctrl+Z' });
         const undoBtn = toast.createEl('button', { cls: 'pdf-comment-toast-undo', text: 'Undo' });
         undoBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1841,7 +1839,7 @@ export class PdfCommenterView extends FileView {
 
         const titleParent = this.titleEl.parentElement;
         if (!titleParent) return;
-        this.titleEl.style.display = 'none';
+        this.titleEl.addClass('is-hidden');
         titleParent.insertBefore(input, this.titleEl);
         input.focus();
         input.select();
@@ -1851,7 +1849,7 @@ export class PdfCommenterView extends FileView {
             input.dataset.done = '1';
             const newName = input.value.trim();
             input.remove();
-            this.titleEl.style.display = '';
+            this.titleEl.removeClass('is-hidden');
 
             if (commit && newName && newName !== currentName && this.file) {
                 await this.renamePdf(newName);

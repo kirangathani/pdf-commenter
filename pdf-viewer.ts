@@ -404,7 +404,7 @@ export class PDFViewerComponent implements IPDFViewer {
         viewport: PageViewport,
     ): Promise<void> {
         // Use PDF.js built-in text layer renderer for correct positioning/selection.
-        container.innerHTML = '';
+        while (container.firstChild) container.removeChild(container.firstChild);
         container.classList.add('textLayer');
 
         if (typeof pdfjsLib.renderTextLayer === 'function') {
@@ -520,7 +520,7 @@ export class PDFViewerComponent implements IPDFViewer {
 
         // If we somehow don't have DOM pages yet, fall back to the original full render.
         if (!all.length) {
-            sc.innerHTML = '';
+            while (sc.firstChild) sc.removeChild(sc.firstChild);
             this.pageContainers.clear();
             for (let pageNum = 1; pageNum <= this.pdfDoc.numPages; pageNum++) {
                 if (generation !== this.renderGeneration) return;

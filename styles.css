@@ -672,6 +672,13 @@ body.pdf-commenter-dark {
     outline-offset: 1px;
 }
 
+/* Off-screen staging container for async comment rendering */
+.pdf-comments-staging {
+    visibility: hidden;
+    position: absolute;
+    left: -9999px;
+}
+
 /* Generic utility: hide elements via class toggle */
 .is-hidden {
     display: none;
