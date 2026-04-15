@@ -199,7 +199,7 @@ class PdfCommenterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Use Obsidian accent colour')
-			.setDesc('Match the accent colour you have set in Obsidian\'s Appearance settings.')
+			.setDesc('Match the accent colour you have set in Obsidian\'s appearance settings.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.useObsidianAccent)
 				.onChange(async (value) => {
