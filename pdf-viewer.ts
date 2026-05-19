@@ -192,8 +192,7 @@ export class PDFViewerComponent implements IPDFViewer {
         const oldCanvases = Array.from(pageContainer.querySelectorAll('.pdf-page-canvas'));
         const oldTextLayers = Array.from(pageContainer.querySelectorAll('.pdf-text-layer'));
 
-        const canvas = document.createElement('canvas');
-        canvas.className = 'pdf-page-canvas';
+        const canvas = createEl('canvas', { cls: 'pdf-page-canvas' });
         const context = canvas.getContext('2d');
         if (!context) return;
 
@@ -231,8 +230,7 @@ export class PDFViewerComponent implements IPDFViewer {
             pageContainer.appendChild(canvas);
         }
 
-        const textLayerDiv = document.createElement('div');
-        textLayerDiv.className = 'pdf-text-layer';
+        const textLayerDiv = createDiv({ cls: 'pdf-text-layer' });
         const textContent = await page.getTextContent();
         if (generation !== this.renderGeneration) return;
         await this.renderTextLayer(textLayerDiv, textContent, viewport);
@@ -334,9 +332,7 @@ export class PDFViewerComponent implements IPDFViewer {
             this.pdfDoc = await loadingTask.promise;
 
             // Create scroll container
-            const scrollContainer = document.createElement('div');
-            scrollContainer.className = 'pdf-scroll-container';
-            this.container.appendChild(scrollContainer);
+            const scrollContainer = this.container.createDiv({ cls: 'pdf-scroll-container' });
 
             // Render all pages
             for (let pageNum = 1; pageNum <= this.pdfDoc.numPages; pageNum++) {
@@ -358,15 +354,13 @@ export class PDFViewerComponent implements IPDFViewer {
         const viewport = page.getViewport({ scale: this.currentScale });
 
         // Create page container
-        const pageContainer = document.createElement('div');
-        pageContainer.className = 'pdf-page-container';
+        const pageContainer = createDiv({ cls: 'pdf-page-container' });
         pageContainer.setCssStyles({ width: `${viewport.width}px`, height: `${viewport.height}px` });
         pageContainer.dataset.pageNumber = String(pageNum);
         this.pageContainers.set(pageNum, pageContainer);
 
         // Create canvas for rendering
-        const canvas = document.createElement('canvas');
-        canvas.className = 'pdf-page-canvas';
+        const canvas = createEl('canvas', { cls: 'pdf-page-canvas' });
         const context = canvas.getContext('2d');
         if (!context) return;
 
@@ -382,8 +376,7 @@ export class PDFViewerComponent implements IPDFViewer {
         pageContainer.appendChild(canvas);
 
         // Create text layer for selection
-        const textLayerDiv = document.createElement('div');
-        textLayerDiv.className = 'pdf-text-layer';
+        const textLayerDiv = createDiv({ cls: 'pdf-text-layer' });
 
         // Get text content
         const textContent = await page.getTextContent();
@@ -425,8 +418,7 @@ export class PDFViewerComponent implements IPDFViewer {
             if ('str' in item) {
                 const textItem = item as PDFTextItem;
                 if (!textItem.str) continue;
-                const span = document.createElement('span');
-                span.textContent = textItem.str;
+                const span = createSpan({ text: textItem.str });
                 const tx = pdfjsLib.Util.transform(viewport.transform, textItem.transform);
                 const fontHeight = Math.sqrt((tx[2] * tx[2]) + (tx[3] * tx[3]));
                 const left = tx[4];

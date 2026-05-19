@@ -22,9 +22,7 @@ export class WikilinkSuggest {
 		this.app = app;
 		this.textarea = textarea;
 
-		this.popup = document.createElement('div');
-		this.popup.addClass('mg-suggest-container');
-		document.body.appendChild(this.popup);
+		this.popup = activeDocument.body.createDiv({ cls: 'mg-suggest-container' });
 
 		this.inputHandler = () => this.onInput();
 		this.keydownHandler = (e: KeyboardEvent) => this.onKeydown(e);
@@ -73,7 +71,7 @@ export class WikilinkSuggest {
 
 			// Aliases from frontmatter via metadataCache
 			const cache = this.app.metadataCache.getFileCache(file);
-			const aliases = cache?.frontmatter?.aliases;
+			const aliases: unknown = cache?.frontmatter?.aliases;
 			if (Array.isArray(aliases)) {
 				for (const alias of aliases) {
 					if (typeof alias === 'string' && alias.trim()) {
@@ -206,7 +204,7 @@ export class WikilinkSuggest {
 		this.popup.empty();
 		for (let i = 0; i < this.items.length; i++) {
 			const target = this.items[i];
-			const el = this.popup.createEl('div', { cls: 'mg-suggest-item' });
+			const el = this.popup.createDiv({ cls: 'mg-suggest-item' });
 			el.createSpan({ text: target.displayText });
 			// Show folder path for context, and alias indicator
 			const folder = target.file.parent?.path;
@@ -230,7 +228,7 @@ export class WikilinkSuggest {
 	private showEmpty(): void {
 		this.popup.empty();
 		this.items = [];
-		this.popup.createEl('div', { cls: 'mg-suggest-empty', text: 'No matching notes' });
+		this.popup.createDiv({ cls: 'mg-suggest-empty', text: 'No matching notes' });
 		this.show();
 	}
 

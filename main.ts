@@ -1,6 +1,13 @@
 import { Plugin, PluginManifest, PluginSettingTab, Setting, FuzzySuggestModal, TFile, App } from "obsidian";
 import { VIEW_TYPE_PDF_COMMENTER, PdfCommenterView } from './view';
 
+type AppWithViewRegistry = App & {
+	viewRegistry: {
+		registerExtensions(exts: string[], type: string): void;
+		unregisterExtensions(exts: string[]): void;
+	};
+};
+
 interface PdfCommenterSettings {
 	accentColor: string;
 	useObsidianAccent: boolean;
@@ -40,9 +47,8 @@ function lightenHex(hex: string, amount: number): string {
 }
 
 function resolveColorToHex(color: string): string | null {
-	const el = document.createElement('div');
+	const el = activeDocument.body.createDiv();
 	el.style.color = color;
-	document.body.appendChild(el);
 	const computed = getComputedStyle(el).color;
 	el.remove();
 	const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(computed);
@@ -54,7 +60,7 @@ function resolveColorToHex(color: string): string | null {
 }
 
 function getObsidianAccentHex(): string {
-	const raw = getComputedStyle(document.body).getPropertyValue('--interactive-accent').trim();
+	const raw = getComputedStyle(activeDocument.body).getPropertyValue('--interactive-accent').trim();
 	if (!raw) return '#7c3aed';
 	return resolveColorToHex(raw) ?? '#7c3aed';
 }
@@ -65,13 +71,14 @@ function applyAccentColor(color: string): void {
 	const { r, g, b } = rgb;
 	const hover = darkenHex(color, 0.12);
 
-	document.body.style.setProperty('--pdf-commenter-accent', color);
-	document.body.style.setProperty('--pdf-commenter-accent-hover', hover);
-	document.body.style.setProperty('--pdf-commenter-accent-25', `rgba(${r}, ${g}, ${b}, 0.25)`);
-	document.body.style.setProperty('--pdf-commenter-accent-35', `rgba(${r}, ${g}, ${b}, 0.35)`);
-	document.body.style.setProperty('--pdf-commenter-accent-40', `rgba(${r}, ${g}, ${b}, 0.4)`);
-	document.body.style.setProperty('--pdf-commenter-accent-12', `rgba(${r}, ${g}, ${b}, 0.12)`);
-	document.body.style.setProperty('--pdf-commenter-accent-light', lightenHex(color, 0.3));
+	const body = activeDocument.body;
+	body.style.setProperty('--pdf-commenter-accent', color);
+	body.style.setProperty('--pdf-commenter-accent-hover', hover);
+	body.style.setProperty('--pdf-commenter-accent-25', `rgba(${r}, ${g}, ${b}, 0.25)`);
+	body.style.setProperty('--pdf-commenter-accent-35', `rgba(${r}, ${g}, ${b}, 0.35)`);
+	body.style.setProperty('--pdf-commenter-accent-40', `rgba(${r}, ${g}, ${b}, 0.4)`);
+	body.style.setProperty('--pdf-commenter-accent-12', `rgba(${r}, ${g}, ${b}, 0.12)`);
+	body.style.setProperty('--pdf-commenter-accent-light', lightenHex(color, 0.3));
 }
 
 function clearAccentColor(): void {
@@ -81,7 +88,8 @@ function clearAccentColor(): void {
 		'--pdf-commenter-accent-40', '--pdf-commenter-accent-12',
 		'--pdf-commenter-accent-light',
 	];
-	for (const p of props) document.body.style.removeProperty(p);
+	const body = activeDocument.body;
+	for (const p of props) body.style.removeProperty(p);
 }
 
 class PdfFileSuggestModal extends FuzzySuggestModal<TFile> {
@@ -113,9 +121,8 @@ export default class PdfCommenterPlugin extends Plugin {
 			(leaf) => new PdfCommenterView(leaf, { pluginId: this.manifest.id, pluginDir: (this.manifest as PluginManifest & { dir?: string }).dir ?? this.manifest.id })
 		);
 
-		// Claim .pdf extension from built-in viewer
-		// @ts-expect-error viewRegistry is an undocumented internal API
-		this.app.viewRegistry.unregisterExtensions(['pdf']);
+		// Claim .pdf extension from built-in viewer (viewRegistry is an undocumented Obsidian API)
+		(this.app as AppWithViewRegistry).viewRegistry.unregisterExtensions(['pdf']);
 		this.registerExtensions(['pdf'], VIEW_TYPE_PDF_COMMENTER);
 
 		// Ribbon icon opens a fuzzy file picker filtered to PDFs
@@ -136,17 +143,16 @@ export default class PdfCommenterPlugin extends Plugin {
 	onunload(): void {
 		this.darkModeObserver?.disconnect();
 		this.darkModeObserver = null;
-		document.body.classList.remove('pdf-commenter-dark');
+		activeDocument.body.classList.remove('pdf-commenter-dark');
 		clearAccentColor();
-		// Restore built-in PDF viewer
-		// @ts-expect-error viewRegistry is an undocumented internal API
-		this.app.viewRegistry.unregisterExtensions(['pdf']);
-		// @ts-expect-error viewRegistry is an undocumented internal API
-		this.app.viewRegistry.registerExtensions(['pdf'], 'pdf');
+		const registry = (this.app as AppWithViewRegistry).viewRegistry;
+		registry.unregisterExtensions(['pdf']);
+		registry.registerExtensions(['pdf'], 'pdf');
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data = (await this.loadData()) as Partial<PdfCommenterSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -166,13 +172,14 @@ export default class PdfCommenterPlugin extends Plugin {
 
 		const resolve = () => {
 			const mode = this.settings.darkMode;
+			const body = activeDocument.body;
 			let isDark: boolean;
 			if (mode === 'auto') {
-				isDark = document.body.classList.contains('theme-dark');
+				isDark = body.classList.contains('theme-dark');
 			} else {
 				isDark = mode === 'dark';
 			}
-			document.body.classList.toggle('pdf-commenter-dark', isDark);
+			body.classList.toggle('pdf-commenter-dark', isDark);
 			if (this.settings.useObsidianAccent) this.applyAccent();
 		};
 
@@ -180,7 +187,7 @@ export default class PdfCommenterPlugin extends Plugin {
 
 		if (this.settings.darkMode === 'auto') {
 			this.darkModeObserver = new MutationObserver(() => resolve());
-			this.darkModeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+			this.darkModeObserver.observe(activeDocument.body, { attributes: true, attributeFilter: ['class'] });
 		}
 	}
 }

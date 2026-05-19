@@ -21,17 +21,17 @@ export class ContextMenu {
         this.createMenu();
 
         // Hide menu when clicking outside
-        document.addEventListener('click', (e) => {
+        activeDocument.addEventListener('click', (e) => {
             if (this.menuEl && !this.menuEl.contains(e.target as Node)) {
                 this.hide();
             }
         });
 
         // Hide menu on scroll
-        document.addEventListener('scroll', () => this.hide(), true);
+        activeDocument.addEventListener('scroll', () => this.hide(), true);
 
         // Hide menu on escape
-        document.addEventListener('keydown', (e) => {
+        activeDocument.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.hide();
         });
     }
@@ -40,38 +40,27 @@ export class ContextMenu {
      * Create the menu element
      */
     private createMenu(): void {
-        this.menuEl = document.createElement('div');
-        this.menuEl.className = 'pdf-context-menu';
-        this.menuEl.addClass('is-hidden');
+        const menuEl = activeDocument.body.createDiv({ cls: 'pdf-context-menu' });
+        menuEl.addClass('is-hidden');
+        this.menuEl = menuEl;
 
         // Add menu items
         for (const action of this.actions) {
-            const item = document.createElement('div');
-            item.className = 'pdf-context-menu-item';
+            const item = menuEl.createDiv({ cls: 'pdf-context-menu-item' });
             item.dataset.actionId = action.id;
 
             if (action.icon) {
-                const icon = document.createElement('span');
-                icon.className = 'pdf-context-menu-icon';
-                icon.textContent = action.icon;
-                item.appendChild(icon);
+                item.createSpan({ cls: 'pdf-context-menu-icon', text: action.icon });
             }
 
-            const label = document.createElement('span');
-            label.className = 'pdf-context-menu-label';
-            label.textContent = action.label;
-            item.appendChild(label);
+            item.createSpan({ cls: 'pdf-context-menu-label', text: action.label });
 
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 action.callback(this.currentText);
                 this.hide();
             });
-
-            this.menuEl.appendChild(item);
         }
-
-        document.body.appendChild(this.menuEl);
     }
 
     /**

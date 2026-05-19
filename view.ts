@@ -116,7 +116,7 @@ export class PdfCommenterView extends FileView {
     private activeWikilinkSuggest: WikilinkSuggest | null = null;
 
     // Undo stack for deferred comment deletion
-    private deleteUndoStack: { annotation: PdfAnnotation; index: number; timer: ReturnType<typeof setTimeout> }[] = [];
+    private deleteUndoStack: { annotation: PdfAnnotation; index: number; timer: number }[] = [];
     private undoKeyHandler: ((e: KeyboardEvent) => void) | null = null;
     private activeToast: HTMLElement | null = null;
 
@@ -136,7 +136,7 @@ export class PdfCommenterView extends FileView {
     private searchMatches: { source: 'pdf' | 'comment'; pageNumber: number }[] = [];
     private searchCurrentIdx = -1;
     private searchHighlightEls: HTMLElement[] = [];
-    private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private searchDebounceTimer: number | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -216,10 +216,10 @@ export class PdfCommenterView extends FileView {
             container.addClass('pdf-view-container');
 
             // Create controls section
-            this.controlsSection = container.createEl('div', { cls: 'controls-section' });
+            this.controlsSection = container.createDiv({ cls: 'controls-section' });
 
             // Header with rename support
-            const headerRow = this.controlsSection.createEl('div', { cls: 'pdf-header-row' });
+            const headerRow = this.controlsSection.createDiv({ cls: 'pdf-header-row' });
             this.titleEl = headerRow.createEl('h2', { text: 'PDF viewer' });
             const renameBtn = headerRow.createEl('button', { cls: 'pdf-rename-btn', attr: { 'aria-label': 'Rename PDF' } });
             renameBtn.textContent = '\u270E'; // pencil icon
@@ -227,27 +227,27 @@ export class PdfCommenterView extends FileView {
             this.titleEl.addEventListener('dblclick', () => this.startRename());
 
             // Zoom controls
-            const zoomContainer = this.controlsSection.createEl('div', { cls: 'zoom-controls' });
+            const zoomContainer = this.controlsSection.createDiv({ cls: 'zoom-controls' });
 
             this.zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' });
-            this.zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' });
+            this.zoomLabel = zoomContainer.createSpan({ text: '150%', cls: 'zoom-label' });
             this.zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' });
 
             // Initial state (no PDF loaded yet)
             this.updateZoomButtonsState();
 
             // Viewer row (PDF left + comments right), below the input/controls section
-            this.viewerRow = container.createEl('div', { cls: 'pdf-viewer-row' });
+            this.viewerRow = container.createDiv({ cls: 'pdf-viewer-row' });
 
             // Create PDF container (left)
-            this.pdfContainer = this.viewerRow.createEl('div', { cls: 'pdf-viewer-container' });
+            this.pdfContainer = this.viewerRow.createDiv({ cls: 'pdf-viewer-container' });
 
             // Search bar overlaid on pdfContainer (hidden by default; recreated after each PDF load)
             this.createSearchBar();
 
             // Create empty comments pane (right)
-            this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
-            this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+            this.commentsPane = this.viewerRow.createDiv({ cls: 'pdf-comments-pane' });
+            this.commentsTrack = this.commentsPane.createDiv({ cls: 'pdf-comments-track' });
 
             // Trackpad pinch-to-zoom (typically arrives as Ctrl+wheel on Chromium/Electron).
             // We do a two-phase zoom:
@@ -262,7 +262,7 @@ export class PdfCommenterView extends FileView {
                 const r = this.pdfContainer.getBoundingClientRect();
                 const cx = r.left + r.width / 2;
                 const cy = r.top + r.height / 2;
-                const elAt = document.elementFromPoint(cx, cy) as HTMLElement | null;
+                const elAt = activeDocument.elementFromPoint(cx, cy) as HTMLElement | null;
                 const pageEl = elAt?.closest?.('.pdf-page-container') as HTMLElement | null;
                 if (!pageEl) return null;
                 const pageRect = pageEl.getBoundingClientRect();
@@ -307,8 +307,8 @@ export class PdfCommenterView extends FileView {
             };
 
             const schedulePinchCommit = () => {
-                if (pinchCommitTimer) window.clearTimeout(pinchCommitTimer);
-                pinchCommitTimer = window.setTimeout(() => {
+                if (pinchCommitTimer) activeWindow.clearTimeout(pinchCommitTimer);
+                pinchCommitTimer = activeWindow.setTimeout(() => {
                     void (async () => {
                         if (!this.pdfViewer || pinchTargetScale == null) return;
                         const anchor = getViewportCenterAnchor();
@@ -489,7 +489,7 @@ export class PdfCommenterView extends FileView {
 
                     // Undo deletion: Ctrl/Cmd+Z when no textarea is focused
                     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z' || e.code === 'KeyZ')) {
-                        const isTextareaFocused = this.activeInlineTextarea && document.activeElement === this.activeInlineTextarea;
+                        const isTextareaFocused = this.activeInlineTextarea && activeDocument.activeElement === this.activeInlineTextarea;
                         if (!isTextareaFocused && this.deleteUndoStack.length > 0 && this.app.workspace.getActiveViewOfType(PdfCommenterView) === this) {
                             e.preventDefault();
                             e.stopImmediatePropagation();
@@ -499,7 +499,7 @@ export class PdfCommenterView extends FileView {
                         }
                     }
 
-                    if (!this.activeInlineTextarea || document.activeElement !== this.activeInlineTextarea) return;
+                    if (!this.activeInlineTextarea || activeDocument.activeElement !== this.activeInlineTextarea) return;
                     const isCombo =
                         (e.ctrlKey || e.metaKey) &&
                         (e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter');
@@ -584,7 +584,7 @@ export class PdfCommenterView extends FileView {
             text,
             cls: `${type}-message`
         });
-        setTimeout(() => msg.remove(), 3000);
+        activeWindow.setTimeout(() => msg.remove(), 3000);
     }
 
     private updateZoomButtonsState(): void {
@@ -596,7 +596,7 @@ export class PdfCommenterView extends FileView {
     async onClose(): Promise<void> {
         // Commit any pending deletions before super.onClose() nulls this.file
         for (const entry of this.deleteUndoStack) {
-            clearTimeout(entry.timer);
+            activeWindow.clearTimeout(entry.timer);
             await this.commitDeletion(entry.annotation.id);
         }
         this.deleteUndoStack = [];
@@ -625,7 +625,7 @@ export class PdfCommenterView extends FileView {
         this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
-        if (this.searchDebounceTimer) { clearTimeout(this.searchDebounceTimer); this.searchDebounceTimer = null; }
+        if (this.searchDebounceTimer) { activeWindow.clearTimeout(this.searchDebounceTimer); this.searchDebounceTimer = null; }
         if (this.activeWikilinkSuggest) {
             this.activeWikilinkSuggest.destroy();
             this.activeWikilinkSuggest = null;
@@ -777,19 +777,19 @@ export class PdfCommenterView extends FileView {
 
     private createSearchBar(): void {
         if (!this.pdfContainer) return;
-        this.searchBar = document.createElement('div');
-        this.searchBar.className = 'pdf-search-bar is-hidden';
-        this.pdfContainer.prepend(this.searchBar);
-        this.searchInput = this.searchBar.createEl('input', {
+        const bar = createDiv({ cls: 'pdf-search-bar is-hidden' });
+        this.searchBar = bar;
+        this.pdfContainer.prepend(bar);
+        this.searchInput = bar.createEl('input', {
             cls: 'pdf-search-input',
             attr: { type: 'text', placeholder: 'Find in PDF…' },
         });
-        this.searchMatchLabel = this.searchBar.createEl('span', { cls: 'pdf-search-match-label' });
-        const searchClose = this.searchBar.createEl('button', { cls: 'pdf-search-close-btn', text: '×' });
+        this.searchMatchLabel = bar.createSpan({ cls: 'pdf-search-match-label' });
+        const searchClose = bar.createEl('button', { cls: 'pdf-search-close-btn', text: '×' });
 
         this.searchInput.addEventListener('input', () => {
-            if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
-            this.searchDebounceTimer = setTimeout(() => this.performSearch(), 150);
+            if (this.searchDebounceTimer) activeWindow.clearTimeout(this.searchDebounceTimer);
+            this.searchDebounceTimer = activeWindow.setTimeout(() => this.performSearch(), 150);
         });
         this.searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
             if (e.key === 'Enter') {
@@ -851,7 +851,7 @@ export class PdfCommenterView extends FileView {
 
         // Helper: walk text nodes inside a root, wrap query matches in <mark>
         const wrapMatches = (root: Node, source: 'pdf' | 'comment', pageNumber: number) => {
-            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const walker = activeDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
             const textNodes: Text[] = [];
             let n: Text | null;
             while ((n = walker.nextNode() as Text | null)) textNodes.push(n);
@@ -867,8 +867,7 @@ export class PdfCommenterView extends FileView {
                     const matchNode = node.splitText(idx);
                     const after = matchNode.splitText(query.length);
 
-                    const mark = document.createElement('mark');
-                    mark.className = 'pdf-search-highlight';
+                    const mark = createEl('mark', { cls: 'pdf-search-highlight' });
                     matchNode.parentNode!.insertBefore(mark, matchNode);
                     mark.appendChild(matchNode);
 
@@ -953,7 +952,7 @@ export class PdfCommenterView extends FileView {
         const MARKER_GAP = 10;
 
         // Phase 1: Compute ideal top positions
-        const items: { annotation: typeof this.annotations[0]; idealTop: number; markerEl: HTMLElement }[] = [];
+        const items: { annotation: PdfAnnotation; idealTop: number; markerEl: HTMLElement }[] = [];
         for (const a of this.annotations) {
             const pageEl = this.pdfContainer.querySelector<HTMLElement>(
                 `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
@@ -968,9 +967,7 @@ export class PdfCommenterView extends FileView {
         // Phase 3: Create DOM elements in a temporary off-screen container so the
         // old content stays visible while async rendering (note reads, markdown
         // preview) is in flight. The container is swapped in atomically in Phase 4.
-        const staging = document.createElement('div');
-        staging.addClass('pdf-comments-staging');
-        this.commentsTrack.appendChild(staging);
+        const staging = this.commentsTrack.createDiv({ cls: 'pdf-comments-staging' });
 
         const renderPromises: Promise<void>[] = [];
         let pendingFocusTextarea: HTMLTextAreaElement | null = null;
@@ -979,7 +976,7 @@ export class PdfCommenterView extends FileView {
             const a = item.annotation;
             const isSelected = a.id === this.selectedAnnotationId;
 
-            const marker = staging.createEl('div', { cls: 'pdf-comment-marker' });
+            const marker = staging.createDiv({ cls: 'pdf-comment-marker' });
             if (!isSelected) marker.addClass('is-collapsed');
             item.markerEl = marker;
 
@@ -1053,12 +1050,12 @@ export class PdfCommenterView extends FileView {
         marker: HTMLElement,
         a: PdfAnnotation,
     ): { loadPromise: Promise<void>; textarea: HTMLTextAreaElement } {
-        const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
+        const editor = marker.createDiv({ cls: 'pdf-comment-inline-editor' });
         const textarea = editor.createEl('textarea', {
             cls: 'pdf-comment-inline-textarea',
             attr: { rows: '3', placeholder: 'Write a comment… (supports [[backlinks]])' },
         });
-        const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
+        const footer = editor.createDiv({ cls: 'pdf-comment-inline-footer' });
         const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
         saveBtn.disabled = true;
         let isSaving = false;
@@ -1182,7 +1179,7 @@ export class PdfCommenterView extends FileView {
 
     /** Set up a collapsed preview inside a marker. Returns the render promise. */
     private setupPreviewInMarker(marker: HTMLElement, a: PdfAnnotation): Promise<void> {
-        const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
+        const preview = marker.createDiv({ cls: 'pdf-comment-preview' });
         return this.renderNotePreviewInto(a, preview);
     }
 
@@ -1302,7 +1299,7 @@ export class PdfCommenterView extends FileView {
         for (const pageEl of pages) {
             let layer = pageEl.querySelector<HTMLElement>('.pdf-highlight-layer');
             if (!layer) {
-                layer = pageEl.createEl('div', { cls: 'pdf-highlight-layer' });
+                layer = pageEl.createDiv({ cls: 'pdf-highlight-layer' });
             }
             layer.empty();
         }
@@ -1323,7 +1320,7 @@ export class PdfCommenterView extends FileView {
                 if (!pageW || !pageH) continue;
 
                 for (const r of pr.rects) {
-                    const el = layer.createEl('div', { cls: 'pdf-highlight-rect' });
+                    const el = layer.createDiv({ cls: 'pdf-highlight-rect' });
                     el.setCssStyles({
                         left: `${r.x * pageW}px`,
                         top: `${r.y * pageH}px`,
@@ -1522,7 +1519,7 @@ export class PdfCommenterView extends FileView {
         }
         // Fallback (pre-migration): show inline text if present
         const fallback = (ann.commentText ?? '').trim();
-        container.createEl('div', {
+        container.createDiv({
             cls: 'pdf-comment-preview-empty',
             text: fallback ? fallback : '(No note yet)',
         });
@@ -1624,7 +1621,7 @@ export class PdfCommenterView extends FileView {
         this.renderHighlights();
 
         // Push onto undo stack with a deferred commit timer
-        const timer = setTimeout(() => {
+        const timer = activeWindow.setTimeout(() => {
             void this.commitDeletion(annotationId);
         }, PdfCommenterView.DELETE_UNDO_TIMEOUT_MS);
         this.deleteUndoStack.push({ annotation: ann, index: idx, timer });
@@ -1659,7 +1656,7 @@ export class PdfCommenterView extends FileView {
         const entry = this.deleteUndoStack.pop();
         if (!entry) return;
 
-        clearTimeout(entry.timer);
+        activeWindow.clearTimeout(entry.timer);
 
         // Re-insert at original index (clamped to current length)
         const insertIdx = Math.min(entry.index, this.annotations.length);
@@ -1680,8 +1677,8 @@ export class PdfCommenterView extends FileView {
             this.dismissDeleteToast();
         }
 
-        const toast = this.contentEl.createEl('div', { cls: 'pdf-comment-delete-toast' });
-        toast.createEl('span', { text: 'Comment deleted. You can undo a delete quickly with Ctrl+Z' });
+        const toast = this.contentEl.createDiv({ cls: 'pdf-comment-delete-toast' });
+        toast.createSpan({ text: 'Comment deleted. You can undo a delete quickly with Ctrl+Z' });
         const undoBtn = toast.createEl('button', { cls: 'pdf-comment-toast-undo', text: 'Undo' });
         undoBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1710,7 +1707,7 @@ export class PdfCommenterView extends FileView {
         for (const rect of rects) {
             const cx = rect.left + rect.width / 2;
             const cy = rect.top + rect.height / 2;
-            const elAtPoint = document.elementFromPoint(cx, cy);
+            const elAtPoint = activeDocument.elementFromPoint(cx, cy);
             const pageEl = elAtPoint?.closest?.('.pdf-page-container') as HTMLElement | null;
             if (!pageEl) continue;
 
@@ -1799,13 +1796,13 @@ export class PdfCommenterView extends FileView {
 
         // Find the page element containing the selection
         const anchorEl =
-            selection.anchorNode instanceof Element
+            selection.anchorNode?.instanceOf(Element)
                 ? selection.anchorNode
                 : selection.anchorNode?.parentElement ?? null;
         const commonEl =
-            range.commonAncestorContainer instanceof Element
+            range.commonAncestorContainer.instanceOf(Element)
                 ? range.commonAncestorContainer
-                : range.commonAncestorContainer?.parentElement ?? null;
+                : range.commonAncestorContainer.parentElement ?? null;
 
         const pageEl =
             (anchorEl?.closest?.('.pdf-page-container') ?? commonEl?.closest?.('.pdf-page-container')) as
@@ -1832,10 +1829,10 @@ export class PdfCommenterView extends FileView {
         if (!this.file) return;
 
         const currentName = this.file.basename;
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = currentName;
-        input.className = 'pdf-rename-input';
+        const input = createEl('input', {
+            cls: 'pdf-rename-input',
+            attr: { type: 'text', value: currentName },
+        });
 
         const titleParent = this.titleEl.parentElement;
         if (!titleParent) return;
