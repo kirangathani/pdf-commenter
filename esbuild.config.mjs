@@ -41,6 +41,58 @@ const copyPdfWorker = {
 	}
 };
 
+// Patch out pdfjs-dist's fake-worker `loadScript` helper, which injects a
+// <script> element to fetch the worker dynamically. This plugin always supplies
+// a real worker via blob URL, so that fallback path is never taken. Dynamic
+// <script> injection is disallowed by Obsidian's plugin guidelines and is
+// flagged by the automated review, so we replace the helper with a rejection.
+// The build fails loudly if the expected pattern is absent (e.g. after a pdfjs
+// upgrade), so the offending code can never silently slip back into the bundle.
+const stripPdfjsLoadScript = {
+	name: 'strip-pdfjs-load-script',
+	setup(build) {
+		build.onLoad({ filter: /pdfjs-dist[\\/]build[\\/]pdf\.js$/ }, (args) => {
+			const original = fs.readFileSync(args.path, 'utf8');
+
+			// 1. Replace `loadScript`, which injected a <script> element.
+			const loadScriptReplacement =
+`function loadScript(src, removeScriptElement = false) {
+  // Patched at build time (esbuild.config.mjs): upstream injected a <script>
+  // element to load the fake worker. We always supply a real worker, so reject.
+  return Promise.reject(new Error("pdf-commenter: dynamic script loading is disabled"));
+}`;
+			let patched = original.replace(
+				/function loadScript\(src, removeScriptElement = false\) \{[\s\S]*?\n\}/,
+				loadScriptReplacement
+			);
+			if (patched === original) {
+				throw new Error('[strip-pdfjs-load-script] loadScript pattern not found; pdfjs source may have changed');
+			}
+
+			// 2. Remove the Node fake-worker branch that calls eval("require").
+			// Same dead fallback; never reached because a real worker is always supplied.
+			const evalBranch =
+`      if (_is_node.isNodeJS && typeof require === "function") {
+        const worker = eval("require")(this.workerSrc);
+        return worker.WorkerMessageHandler;
+      }
+`;
+			if (!patched.includes(evalBranch)) {
+				throw new Error('[strip-pdfjs-load-script] eval("require") branch not found; pdfjs source may have changed');
+			}
+			patched = patched.replace(evalBranch, '');
+
+			if (/createElement\(["']script["']\)/.test(patched)) {
+				throw new Error('[strip-pdfjs-load-script] script-element creation still present after patch');
+			}
+			if (/\beval\(/.test(patched)) {
+				throw new Error('[strip-pdfjs-load-script] eval( still present after patch');
+			}
+			return { contents: patched, loader: 'js' };
+		});
+	}
+};
+
 // Inline the PDF.js worker code as a virtual module so the plugin is self-contained.
 // This is critical for BRAT installs where only main.js/manifest.json/styles.css are downloaded.
 const inlinePdfWorker = {
@@ -94,7 +146,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "main.js",
 	minify: prod,
-	plugins: [copyPdfWorker, inlinePdfWorker],
+	plugins: [stripPdfjsLoadScript, copyPdfWorker, inlinePdfWorker],
 });
 
 if (prod) {
