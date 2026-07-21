@@ -23,3 +23,11 @@ data.json
 
 # Exclude todo list
 todo.txt
+
+# Mock harness build artefacts (source under mock/ is committed)
+mock/mock.js
+mock/pdf.worker.js
+mock/test.pdf
+
+# Local dev marker so pjeby/hot-reload watches this plugin folder
+.hotreload

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PDF Commenter mock</title>
+<link rel="stylesheet" href="../styles.css">
+<style>
+    /* Stand-ins for the Obsidian theme variables styles.css consumes. */
+    :root, body {
+        --background-primary: #ffffff;
+        --background-secondary: #f2f3f5;
+        --background-modifier-border: #ddd;
+        --background-modifier-border-focus: #bbb;
+        --background-modifier-hover: #ececec;
+        --background-modifier-form-field: #fff;
+        --text-normal: #222;
+        --text-muted: #777;
+        --text-success: #2a7;
+        --text-error: #c33;
+        --pdf-commenter-accent: #7c3aed;
+        --pdf-commenter-accent-hover: #6d28d9;
+        --pdf-commenter-accent-light: #a78bfa;
+        --pdf-commenter-accent-12: rgba(124, 58, 237, 0.12);
+        --pdf-commenter-accent-25: rgba(124, 58, 237, 0.25);
+        --pdf-commenter-accent-35: rgba(124, 58, 237, 0.35);
+        --pdf-commenter-accent-40: rgba(124, 58, 237, 0.4);
+    }
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; color: var(--text-normal); }
+    .mock-root { height: 100%; }
+    .mock-stats { font-size: 11px; color: var(--text-muted); margin-left: 12px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<script src="./mock.js"></script>
+</body>
+</html>

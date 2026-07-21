@@ -119,6 +119,13 @@ export class PdfCommenterView extends FileView {
     private deleteUndoStack: { annotation: PdfAnnotation; index: number; timer: number }[] = [];
     private undoKeyHandler: ((e: KeyboardEvent) => void) | null = null;
     private activeToast: HTMLElement | null = null;
+    private toastHideTimer: number | null = null;
+
+    // Comments pane resizing
+    private paneResizer: HTMLElement | null = null;
+    private paneResizeRaf: number | null = null;
+    private paneResizeObserver: ResizeObserver | null = null;
+    private lastCommentsPaneWidth = 0;
 
     // Promoted from onOpen locals so onLoadFile can access them
     private titleEl: HTMLHeadingElement;
@@ -245,9 +252,15 @@ export class PdfCommenterView extends FileView {
             // Search bar overlaid on pdfContainer (hidden by default; recreated after each PDF load)
             this.createSearchBar();
 
-            // Create empty comments pane (right)
+            // Draggable divider, then the comments pane (right)
+            this.paneResizer = this.viewerRow.createDiv({ cls: 'pdf-pane-resizer' });
+            this.paneResizer.setAttribute('aria-label', 'Drag to resize the comments pane (double-click to reset)');
             this.commentsPane = this.viewerRow.createDiv({ cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createDiv({ cls: 'pdf-comments-track' });
+
+            this.setupPaneResizer();
+            this.restoreCommentsPaneWidth();
+            this.observeCommentsPaneWidth();
 
             // Trackpad pinch-to-zoom (typically arrives as Ctrl+wheel on Chromium/Electron).
             // We do a two-phase zoom:
@@ -602,6 +615,13 @@ export class PdfCommenterView extends FileView {
         this.deleteUndoStack = [];
         this.dismissDeleteToast();
 
+        if (this.paneResizeRaf != null) {
+            cancelAnimationFrame(this.paneResizeRaf);
+            this.paneResizeRaf = null;
+        }
+        this.paneResizeObserver?.disconnect();
+        this.paneResizeObserver = null;
+
         await super.onClose();
         if (this.pdfViewer) {
             this.pdfViewer.destroy();
@@ -937,6 +957,122 @@ export class PdfCommenterView extends FileView {
         } else {
             this.searchMatchLabel.textContent = `${this.searchCurrentIdx + 1} of ${this.searchMatches.length}`;
         }
+    }
+
+    /** Smallest usable comments pane width; matches min-width in styles.css. */
+    private static readonly MIN_COMMENTS_PANE_PX = 280;
+    private static readonly COMMENTS_PANE_WIDTH_KEY = 'pdf-commenter:comments-pane-width';
+
+    /**
+     * Let the user drag the divider to resize the comments pane. Marker heights
+     * change as the cards rewrap, so the collision sweep is re-run (throttled to
+     * one pass per frame) while dragging.
+     */
+    private setupPaneResizer(): void {
+        const resizer = this.paneResizer;
+        if (!resizer) return;
+
+        let dragging = false;
+        let moved = false;
+
+        const widthFromClientX = (clientX: number): number => {
+            const rowRect = this.viewerRow.getBoundingClientRect();
+            return this.clampCommentsPaneWidth(rowRect.right - clientX);
+        };
+
+        this.registerDomEvent(resizer, 'pointerdown', (e: PointerEvent) => {
+            dragging = true;
+            moved = false;
+            resizer.addClass('is-dragging');
+            try { resizer.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+            e.preventDefault();
+        });
+
+        this.registerDomEvent(resizer, 'pointermove', (e: PointerEvent) => {
+            if (!dragging) return;
+            moved = true;
+            this.applyCommentsPaneWidth(widthFromClientX(e.clientX));
+            if (this.paneResizeRaf != null) return;
+            this.paneResizeRaf = requestAnimationFrame(() => {
+                this.paneResizeRaf = null;
+                this.repositionMarkers();
+            });
+        });
+
+        const endDrag = (e: PointerEvent) => {
+            if (!dragging) return;
+            dragging = false;
+            resizer.removeClass('is-dragging');
+            try { resizer.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+            // A click without movement must not pin the pane to a fixed width.
+            if (!moved) return;
+            this.updateCommentsTrackHeight();
+            this.repositionMarkers();
+            this.app.saveLocalStorage(
+                PdfCommenterView.COMMENTS_PANE_WIDTH_KEY,
+                this.commentsPane.offsetWidth,
+            );
+        };
+        this.registerDomEvent(resizer, 'pointerup', endDrag);
+        this.registerDomEvent(resizer, 'pointercancel', endDrag);
+
+        // Double-click restores the default proportional width.
+        this.registerDomEvent(resizer, 'dblclick', () => {
+            this.commentsPane.style.removeProperty('flex');
+            this.commentsPane.style.removeProperty('width');
+            this.app.saveLocalStorage(PdfCommenterView.COMMENTS_PANE_WIDTH_KEY, null);
+            this.updateCommentsTrackHeight();
+            this.repositionMarkers();
+        });
+    }
+
+    /**
+     * Comment cards rewrap whenever the pane width changes (dragging the divider,
+     * resizing the window, opening an Obsidian sidebar), which changes their
+     * heights and invalidates the collision layout. Re-run the sweep on any real
+     * width change.
+     */
+    private observeCommentsPaneWidth(): void {
+        if (typeof ResizeObserver === 'undefined') return;
+        this.lastCommentsPaneWidth = this.commentsPane.clientWidth;
+        this.paneResizeObserver = new ResizeObserver(() => {
+            const width = this.commentsPane.clientWidth;
+            if (width === this.lastCommentsPaneWidth) return;
+            this.lastCommentsPaneWidth = width;
+            if (this.paneResizeRaf != null) return;
+            this.paneResizeRaf = requestAnimationFrame(() => {
+                this.paneResizeRaf = null;
+                this.repositionMarkers();
+            });
+        });
+        this.paneResizeObserver.observe(this.commentsPane);
+    }
+
+    /** Keep the pane between the usable minimum and 60% of the row. */
+    private clampCommentsPaneWidth(px: number): number {
+        const rowWidth = this.viewerRow.getBoundingClientRect().width;
+        const min = PdfCommenterView.MIN_COMMENTS_PANE_PX;
+        // Before first layout the row has no width; only the minimum can be enforced.
+        const max = rowWidth > 0 ? Math.max(min, rowWidth * 0.6) : Number.POSITIVE_INFINITY;
+        return Math.round(Math.max(min, Math.min(max, px)));
+    }
+
+    private applyCommentsPaneWidth(px: number): void {
+        this.commentsPane.setCssStyles({ flex: `0 0 ${px}px`, width: `${px}px` });
+    }
+
+    private restoreCommentsPaneWidth(): void {
+        const stored = this.app.loadLocalStorage(PdfCommenterView.COMMENTS_PANE_WIDTH_KEY) as unknown;
+        const px = typeof stored === 'number' ? stored : Number(stored);
+        if (!Number.isFinite(px) || px < PdfCommenterView.MIN_COMMENTS_PANE_PX) return;
+        this.applyCommentsPaneWidth(this.clampCommentsPaneWidth(px));
+        // A width stored on a wider window can exceed 60% here; re-clamp once the
+        // row has its real width.
+        requestAnimationFrame(() => {
+            if (!this.commentsPane?.isConnected) return;
+            const clamped = this.clampCommentsPaneWidth(this.commentsPane.offsetWidth);
+            if (clamped !== this.commentsPane.offsetWidth) this.applyCommentsPaneWidth(clamped);
+        });
     }
 
     private updateCommentsTrackHeight(): void {
@@ -1671,6 +1807,13 @@ export class PdfCommenterView extends FileView {
         }
     }
 
+    /**
+     * How long the toast stays on screen. Deliberately much shorter than
+     * DELETE_UNDO_TIMEOUT_MS: hiding the toast does not close the undo window,
+     * Ctrl+Z still restores the comment until the deferred commit fires.
+     */
+    private static readonly TOAST_HIDE_MS = 4000;
+
     private showDeleteToast(): void {
         // Update existing toast rather than stacking
         if (this.activeToast) {
@@ -1685,9 +1828,18 @@ export class PdfCommenterView extends FileView {
             this.undoLastDeletion();
         });
         this.activeToast = toast;
+
+        this.toastHideTimer = activeWindow.setTimeout(() => {
+            this.toastHideTimer = null;
+            this.dismissDeleteToast();
+        }, PdfCommenterView.TOAST_HIDE_MS);
     }
 
     private dismissDeleteToast(): void {
+        if (this.toastHideTimer != null) {
+            activeWindow.clearTimeout(this.toastHideTimer);
+            this.toastHideTimer = null;
+        }
         if (this.activeToast) {
             this.activeToast.remove();
             this.activeToast = null;

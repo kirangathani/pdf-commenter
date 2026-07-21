@@ -187,10 +187,25 @@ body.pdf-commenter-dark {
     z-index: 1;
 }
 
+/* Draggable divider between the PDF area and the comments pane */
+.pdf-pane-resizer {
+    flex: 0 0 6px;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    z-index: 2;
+}
+
+.pdf-pane-resizer:hover,
+.pdf-pane-resizer.is-dragging {
+    background: var(--pdf-commenter-accent-35);
+}
+
 /* Empty comments pane (right side) */
 .pdf-comments-pane {
     flex: 0 0 20%;
-    min-width: 320px;
+    /* Keep in sync with MIN_COMMENTS_PANE_PX in view.ts */
+    min-width: 280px;
     min-height: 0;
     overflow: auto;
     background: var(--background-primary);
@@ -434,7 +449,11 @@ body.pdf-commenter-dark {
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
-    padding: 10px;
+    /* Vertical padding only: horizontal padding becomes scrollable dead space
+       once a page is wider than the viewport. Side buffer when the viewport is
+       wider than the page comes from the auto margins below, which are not
+       scrollable. */
+    padding: 10px 0;
 }
 
 /* Centre pages when narrower than viewport; left-align when wider so the
@@ -448,6 +467,10 @@ body.pdf-commenter-dark {
     position: relative;
     background: white;
     box-shadow: 0 2px 8px var(--pdc-shadow);
+    /* During a zoom the previous canvas stays in place until the new render
+       lands. Without clipping, that stale oversized canvas spills out of the
+       page box and inflates the horizontal scroll range. */
+    overflow: hidden;
 }
 
 /* Highlight overlay layer (per page) */
